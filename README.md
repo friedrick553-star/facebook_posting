@@ -1,47 +1,38 @@
-# Facebook Marketplace Posting
+Facebook Marketplace Posting
 
-<i>
+Orari: Europe/Rome (Italia) · Chromium: italiano (it-IT)
 
-_Orari: **Europe/Rome (Italia)** · Chromium: **italiano** (`it-IT`)_
+AVVIO
 
----
+- Prima volta: doppio click su setup.bat (serve Python 3.11+ e Node.js)
+- Ogni volta: doppio click su startall.bat
+- Si apre http://localhost:5174
+- Prima visita: imposta email e password admin, Salva, poi Accedi
+- Tieni aperti i 2 CMD (backend e frontend)
 
-## Avvio
+FLUSSO
 
-- **Prima volta:** `setup.bat` (Python 3.11+, Node.js richiesti)
-- **Ogni volta:** `startall.bat` → http://localhost:5174
-- **Prima visita:** imposta email + password admin → Salva → Accedi
-- Tieni aperti i 2 CMD (backend + frontend)
+- Login alla dashboard
+- Users: solo admin principale; ogni utente ha cookie, prodotti e bot separati
+- Products: carica CSV (es. sample_products.csv)
+  - Obbligatori: name, description, price, images, category, condition, availability, schedule_day, schedule_time
+  - Opzionali: details, brand, color
+- Settings: cookie Facebook opzionali; Test flusso completo = demo bicicletta fino a Pubblica (Pubblica NON cliccata)
+- Start:
+  - Nessun prodotto e nessuna sessione Facebook → Chromium si apre subito per login
+  - Sessione salvata e prodotti in CSV → Chromium all ora programmata (Italia)
+  - Test flow attivo → demo bicicletta hardcoded, non da CSV
+- All ora programmata (prodotti CSV):
+  - Chromium apre → form completo → Pubblica cliccata → prodotto Published
+  - Circa 12 secondi → Chromium si chiude → bot resta ON per il prossimo prodotto
+- Stop: bot OFF, Chromium chiuso
 
----
+STATI PRODOTTO
 
-## Flusso
+- Scheduled
+- Published
+- Failed
+- Missing fields
+- Duplicates
 
-- **Login** dashboard
-- **Users** — solo admin principale; ogni utente ha cookie, prodotti e bot separati
-- **Products** — carica CSV (`sample_products.csv`)
-  - Obbligatori: `name`, `description`, `price`, `images`, `category`, `condition`, `availability`, `schedule_day`, `schedule_time`
-  - Opzionali: `details`, `brand`, `color`
-- **Settings**
-  - Cookie Facebook (opzionale)
-  - **Test flusso completo** = demo bicicletta fino a Pubblica (**Pubblica NON cliccata**)
-- **Start**
-  - Nessun prodotto + nessuna sessione → **Chromium subito** (login)
-  - Sessione salvata + prodotti → Chromium all’**ora programmata** (Italia)
-  - Test flow ON → demo bicicletta hardcoded (non da CSV)
-- **All’ora programmata** (prodotti CSV)
-  - Chromium → form completo → **Pubblica cliccata** → stato **Published**
-  - ~12s → Chromium chiuso → bot ON → prossimo prodotto
-- **Stop** — bot OFF, Chromium chiuso
-
----
-
-## Stati prodotti
-
-- **Scheduled** · **Published** · **Failed** · **Missing fields** · **Duplicates**
-
----
-
-[README.en.md](README.en.md)
-
-</i>
+English: README.en.md

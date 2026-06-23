@@ -13,9 +13,11 @@ backend/.env
 frontend/node_modules/
 frontend/dist/
 
-# IDE
+# IDE / workspace (local — not project code)
 .vscode/
 .idea/
+*.code-workspace
+.cursor/
 *.swp
 
 # OS
@@ -23,4 +25,9 @@ frontend/dist/
 Thumbs.db
 
 backend/data/facebook_session.json
+backend/data/backend.pid
+backend/data/users/
 backend/playwright-browsers/
+
+# Local docs / workspace (not in repo)
+README.en.md
