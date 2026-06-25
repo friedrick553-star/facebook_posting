@@ -42,6 +42,7 @@ class ProductPost(Base):
     price: Mapped[float | None] = mapped_column(Float, nullable=True)
     currency: Mapped[str] = mapped_column(String(10), default="EUR", nullable=False)
     images: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    schedule_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
     schedule_day: Mapped[str | None] = mapped_column(String(20), nullable=True)
     schedule_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
     status: Mapped[ProductStatus] = mapped_column(

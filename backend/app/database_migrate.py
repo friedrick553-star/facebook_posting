@@ -121,6 +121,16 @@ def ensure_product_posts_table() -> None:
         Base.metadata.create_all(bind=engine, tables=[ProductPost.__table__])
 
 
+def ensure_schedule_date_column() -> None:
+    inspector = inspect(engine)
+    if not inspector.has_table("product_posts"):
+        return
+    existing = {c["name"] for c in inspector.get_columns("product_posts")}
+    if "schedule_date" not in existing:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE product_posts ADD COLUMN schedule_date VARCHAR(10)"))
+
+
 def ensure_product_listing_columns() -> None:
     inspector = inspect(engine)
     if not inspector.has_table("product_posts"):

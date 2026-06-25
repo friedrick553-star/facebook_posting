@@ -15,7 +15,8 @@ FLUSSO
 - Login alla dashboard
 - Users: solo admin principale; ogni utente ha cookie, prodotti e bot separati
 - Products: carica CSV (es. sample_products.csv)
-  - Obbligatori: name, description, price, images, category, condition, availability, schedule_day, schedule_time
+  - Obbligatori: name, description, price, images, category, condition, availability, schedule_date, schedule_time
+  - schedule_date: YYYY-MM-DD o DD/MM/YYYY · schedule_time: HH:MM (fuso Europe/Rome)
   - Opzionali: details, brand, color
 - Settings: cookie Facebook opzionali; Test flusso completo = demo bicicletta fino a Pubblica (Pubblica NON cliccata)
 - Start:
@@ -34,5 +35,3 @@ STATI PRODOTTO
 - Failed
 - Missing fields
 - Duplicates
-
-English: README.en.md

@@ -13,8 +13,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Badge, Spinner } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import ProductImage from "@/components/products/ProductImage"
-
-const SCHEDULE_DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const
+import { formatScheduleDisplay, normalizeScheduleDate, todayIsoDate } from "@/lib/schedule"
 
 export type ProductStatusKind = "scheduled" | "published" | "pending" | "failed" | "duplicate" | "missing"
 
@@ -131,12 +130,8 @@ function formatDateTime(iso: string | null) {
   return new Date(iso).toLocaleString()
 }
 
-function formatSchedule(day: string | null, time: string | null, t: (key: string) => string) {
-  if (!day && !time) return "—"
-  const dayLabel = day && SCHEDULE_DAYS.includes(day as typeof SCHEDULE_DAYS[number])
-    ? t(`products.days.${day}`)
-    : day || "—"
-  return time ? `${dayLabel} · ${time}` : dayLabel
+function formatSchedule(date: string | null, time: string | null) {
+  return formatScheduleDisplay(date, time)
 }
 
 export default function ProductStatusPage({ kind }: { kind: ProductStatusKind }) {
@@ -154,18 +149,16 @@ export default function ProductStatusPage({ kind }: { kind: ProductStatusKind })
   const [savingId, setSavingId] = useState<number | null>(null)
   const [retryingId, setRetryingId] = useState<number | null>(null)
   const [selected, setSelected] = useState<Set<number>>(new Set())
-  const [drafts, setDrafts] = useState<Record<number, { schedule_day: string; schedule_time: string }>>({})
+  const [drafts, setDrafts] = useState<Record<number, { schedule_date: string; schedule_time: string }>>({})
 
   const applyList = (data: PaginatedResponse<ProductPost>) => {
     setProducts(data.items)
     setTotal(data.total)
     setSelected(new Set())
-    const nextDrafts: Record<number, { schedule_day: string; schedule_time: string }> = {}
+    const nextDrafts: Record<number, { schedule_date: string; schedule_time: string }> = {}
     for (const p of data.items) {
       nextDrafts[p.id] = {
-        schedule_day: p.schedule_day && SCHEDULE_DAYS.includes(p.schedule_day as typeof SCHEDULE_DAYS[number])
-          ? p.schedule_day
-          : "mon",
+        schedule_date: normalizeScheduleDate(p.schedule_date),
         schedule_time: p.schedule_time || "",
       }
     }
@@ -195,14 +188,14 @@ export default function ProductStatusPage({ kind }: { kind: ProductStatusKind })
   const handleSaveSchedule = async (product: ProductPost) => {
     const draft = drafts[product.id]
     if (!draft) return
-    if (!draft.schedule_day || !draft.schedule_time) {
-      toast(t("products.dayTimeRequired"), "warning")
+    if (!draft.schedule_date || !draft.schedule_time) {
+      toast(t("products.dateTimeRequired"), "warning")
       return
     }
     setSavingId(product.id)
     try {
       const { data: updated } = await updateProduct(product.id, {
-        schedule_day: draft.schedule_day,
+        schedule_date: draft.schedule_date,
         schedule_time: draft.schedule_time,
       })
       if (kind === "pending" && updated.status === "scheduled") {
@@ -342,7 +335,7 @@ export default function ProductStatusPage({ kind }: { kind: ProductStatusKind })
                   )}
                   {config.showSchedule && config.editableSchedule && (
                     <>
-                      <th className="p-3 text-left font-medium w-36">{t("products.col.day")}</th>
+                      <th className="p-3 text-left font-medium w-36">{t("products.col.date")}</th>
                       <th className="p-3 text-left font-medium w-28">{t("products.col.time")}</th>
                     </>
                   )}
@@ -361,12 +354,10 @@ export default function ProductStatusPage({ kind }: { kind: ProductStatusKind })
               </thead>
               <tbody>
                 {products.map((p, index) => {
-                  const draft = drafts[p.id] || { schedule_day: "mon", schedule_time: "" }
-                  const savedDay = p.schedule_day && SCHEDULE_DAYS.includes(p.schedule_day as typeof SCHEDULE_DAYS[number])
-                    ? p.schedule_day
-                    : "mon"
+                  const draft = drafts[p.id] || { schedule_date: todayIsoDate(), schedule_time: "" }
+                  const savedDate = p.schedule_date || todayIsoDate()
                   const dirty =
-                    draft.schedule_day !== savedDay ||
+                    draft.schedule_date !== savedDate ||
                     draft.schedule_time !== (p.schedule_time || "")
 
                   return (
@@ -400,25 +391,22 @@ export default function ProductStatusPage({ kind }: { kind: ProductStatusKind })
                       </td>
                       <td className="p-3 tabular-nums whitespace-nowrap">{formatPrice(p.price, p.currency)}</td>
                       {config.showSchedule && !config.editableSchedule && (
-                        <td className="p-3 whitespace-nowrap">{formatSchedule(p.schedule_day, p.schedule_time, t)}</td>
+                        <td className="p-3 whitespace-nowrap">{formatSchedule(p.schedule_date, p.schedule_time)}</td>
                       )}
                       {config.showSchedule && config.editableSchedule && (
                         <>
                           <td className="p-3">
-                            <select
-                              className="h-9 w-full rounded-md border border-input bg-card px-2 text-xs"
-                              value={draft.schedule_day}
+                            <Input
+                              type="date"
+                              className="h-9 text-xs"
+                              value={draft.schedule_date}
                               onChange={(e) =>
                                 setDrafts((d) => ({
                                   ...d,
-                                  [p.id]: { ...draft, schedule_day: e.target.value },
+                                  [p.id]: { ...draft, schedule_date: e.target.value },
                                 }))
                               }
-                            >
-                              {SCHEDULE_DAYS.map((day) => (
-                                <option key={day} value={day}>{t(`products.days.${day}`)}</option>
-                              ))}
-                            </select>
+                            />
                           </td>
                           <td className="p-3">
                             <Input

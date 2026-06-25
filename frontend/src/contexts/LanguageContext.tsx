@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 import { interpolate, translations, type Language } from "@/lib/i18n/translations"
 
 const STORAGE_KEY = "fb-posting-language"
+const LANG_VERSION = "2"
 
 interface LanguageContextType {
   language: Language
@@ -14,7 +15,12 @@ const LanguageContext = createContext<LanguageContextType | undefined>(undefined
 
 function readStoredLanguage(): Language {
   try {
-    if (localStorage.getItem("fb-posting-language-chosen") !== "1") return "it"
+    if (localStorage.getItem("fb-posting-language-version") !== LANG_VERSION) {
+      localStorage.setItem("fb-posting-language-version", LANG_VERSION)
+      localStorage.setItem(STORAGE_KEY, "it")
+      localStorage.removeItem("fb-posting-language-chosen")
+      return "it"
+    }
     const stored = localStorage.getItem(STORAGE_KEY)
     if (stored === "en" || stored === "it") return stored
   } catch {
@@ -29,7 +35,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
   const setLanguage = (lang: Language) => {
     setLanguageState(lang)
     localStorage.setItem(STORAGE_KEY, lang)
-    localStorage.setItem("fb-posting-language-chosen", "1")
+    localStorage.setItem("fb-posting-language-version", LANG_VERSION)
   }
 
   const toggleLanguage = () => {

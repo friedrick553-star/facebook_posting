@@ -151,6 +151,7 @@ export interface ProductPost {
   condition?: string
   availability?: string
   extra_details?: Record<string, string>
+  schedule_date: string | null
   schedule_day: string | null
   schedule_time: string | null
   status: string

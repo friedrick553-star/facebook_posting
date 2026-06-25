@@ -16,8 +16,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge, Spinner } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import ProductImage from "@/components/products/ProductImage"
-
-const SCHEDULE_DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const
+import { formatScheduleDisplay, normalizeScheduleDate, todayIsoDate } from "@/lib/schedule"
 
 const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "destructive" | "secondary"> = {
   pending: "secondary",
@@ -86,18 +85,16 @@ function ProductsPageContent() {
   const [uploading, setUploading] = useState(false)
   const [savingId, setSavingId] = useState<number | null>(null)
   const [selected, setSelected] = useState<Set<number>>(new Set())
-  const [drafts, setDrafts] = useState<Record<number, { schedule_day: string; schedule_time: string }>>({})
+  const [drafts, setDrafts] = useState<Record<number, { schedule_date: string; schedule_time: string }>>({})
 
   const applyList = (data: PaginatedResponse<ProductPost>) => {
     setProducts(data.items)
     setTotal(data.total)
     setSelected(new Set())
-    const nextDrafts: Record<number, { schedule_day: string; schedule_time: string }> = {}
+    const nextDrafts: Record<number, { schedule_date: string; schedule_time: string }> = {}
     for (const p of data.items) {
       nextDrafts[p.id] = {
-        schedule_day: p.schedule_day && SCHEDULE_DAYS.includes(p.schedule_day as typeof SCHEDULE_DAYS[number])
-          ? p.schedule_day
-          : "mon",
+        schedule_date: normalizeScheduleDate(p.schedule_date),
         schedule_time: p.schedule_time || "",
       }
     }
@@ -126,21 +123,21 @@ function ProductsPageContent() {
   const handleSaveSchedule = async (product: ProductPost) => {
     const draft = drafts[product.id]
     if (!draft) return
-    if (!draft.schedule_day || !draft.schedule_time) {
-      toast(t("products.dayTimeRequired"), "warning")
+    if (!draft.schedule_date || !draft.schedule_time) {
+      toast(t("products.dateTimeRequired"), "warning")
       return
     }
     setSavingId(product.id)
     try {
       const { data: updated } = await updateProduct(product.id, {
-        schedule_day: draft.schedule_day,
+        schedule_date: draft.schedule_date,
         schedule_time: draft.schedule_time,
       })
       setProducts((prev) => prev.map((p) => (p.id === updated.id ? updated : p)))
       setDrafts((d) => ({
         ...d,
         [updated.id]: {
-          schedule_day: updated.schedule_day || draft.schedule_day,
+          schedule_date: updated.schedule_date || draft.schedule_date,
           schedule_time: updated.schedule_time || draft.schedule_time,
         },
       }))
@@ -311,7 +308,7 @@ function ProductsPageContent() {
                   <th className="p-3 text-left font-medium min-w-[110px] whitespace-nowrap">{t("products.col.availability")}</th>
                   <th className="p-3 text-left font-medium min-w-[240px] whitespace-nowrap">{t("products.col.details")}</th>
                   <th className="p-3 text-left font-medium min-w-[200px] whitespace-nowrap">{t("products.col.images")}</th>
-                  <th className="p-3 text-left font-medium min-w-[130px] whitespace-nowrap">{t("products.col.day")}</th>
+                  <th className="p-3 text-left font-medium min-w-[130px] whitespace-nowrap">{t("products.col.date")}</th>
                   <th className="p-3 text-left font-medium min-w-[110px] whitespace-nowrap">{t("products.col.time")}</th>
                   <th className="p-3 text-left font-medium min-w-[100px] whitespace-nowrap">{t("common.status")}</th>
                   {isAdmin && <th className="p-3 text-left font-medium min-w-[90px] whitespace-nowrap">{t("common.actions")}</th>}
@@ -319,12 +316,10 @@ function ProductsPageContent() {
               </thead>
               <tbody>
                 {products.map((p) => {
-                  const draft = drafts[p.id] || { schedule_day: "mon", schedule_time: "" }
-                  const savedDay = p.schedule_day && SCHEDULE_DAYS.includes(p.schedule_day as typeof SCHEDULE_DAYS[number])
-                    ? p.schedule_day
-                    : "mon"
+                  const draft = drafts[p.id] || { schedule_date: todayIsoDate(), schedule_time: "" }
+                  const savedDate = p.schedule_date || todayIsoDate()
                   const dirty =
-                    draft.schedule_day !== savedDay ||
+                    draft.schedule_date !== savedDate ||
                     draft.schedule_time !== (p.schedule_time || "")
                   return (
                     <tr key={p.id} className="border-b border-border hover:bg-muted/20 align-top">
@@ -384,22 +379,19 @@ function ProductsPageContent() {
                       </td>
                       <td className="p-3">
                         {isAdmin ? (
-                        <select
-                          className="h-9 w-full rounded-md border border-input bg-card px-2 text-xs"
-                          value={draft.schedule_day}
+                        <Input
+                          type="date"
+                          className="h-9 text-xs"
+                          value={draft.schedule_date}
                           onChange={(e) =>
                             setDrafts((d) => ({
                               ...d,
-                              [p.id]: { ...draft, schedule_day: e.target.value },
+                              [p.id]: { ...draft, schedule_date: e.target.value },
                             }))
                           }
-                        >
-                          {SCHEDULE_DAYS.map((day) => (
-                            <option key={day} value={day}>{t(`products.days.${day}`)}</option>
-                          ))}
-                        </select>
+                        />
                         ) : (
-                          <span className="text-xs">{p.schedule_day ? t(`products.days.${p.schedule_day}`) : "—"}</span>
+                          <span className="text-xs">{formatScheduleDisplay(p.schedule_date, null)}</span>
                         )}
                       </td>
                       <td className="p-3">

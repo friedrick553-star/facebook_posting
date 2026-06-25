@@ -11,6 +11,7 @@ from app.database_migrate import (
     ensure_monitoring_interval_columns,
     ensure_product_listing_columns,
     ensure_product_posts_table,
+    ensure_schedule_date_column,
     ensure_test_full_flow_column,
     ensure_user_scoped_columns,
     ensure_users_primary_column,
@@ -41,6 +42,7 @@ def run_blocking_startup(settings: Settings) -> None:
     ensure_test_full_flow_column()
     ensure_product_posts_table()
     ensure_product_listing_columns()
+    ensure_schedule_date_column()
     ensure_users_primary_column()
     ensure_user_scoped_columns()
     migrate_legacy_monitoring_intervals()

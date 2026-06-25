@@ -290,6 +290,7 @@ class ProductResponse(BaseModel):
     condition: str = "new"
     availability: str = "single"
     extra_details: dict[str, str] = {}
+    schedule_date: str | None
     schedule_day: str | None
     schedule_time: str | None
     status: str
@@ -312,6 +313,7 @@ class ProductUpdate(BaseModel):
     condition: str | None = None
     availability: str | None = None
     extra_details: dict[str, str] | None = None
+    schedule_date: str | None = None
     schedule_day: str | None = None
     schedule_time: str | None = None
 

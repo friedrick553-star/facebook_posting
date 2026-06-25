@@ -35,6 +35,12 @@ _SCHEDULE_DAY_ORDER = case(
 )
 
 
+def _product_has_schedule(p: ProductPost) -> bool:
+    if not p.schedule_time:
+        return False
+    return bool(p.schedule_date or p.schedule_day)
+
+
 def _apply_product_sort(q, status: str | None, sort: str | None):
     effective = sort
     if not effective and status == "scheduled":
@@ -44,8 +50,9 @@ def _apply_product_sort(q, status: str | None, sort: str | None):
 
     if effective == "schedule":
         return q.order_by(
-            _SCHEDULE_DAY_ORDER.asc(),
+            ProductPost.schedule_date.asc().nulls_last(),
             ProductPost.schedule_time.asc().nulls_last(),
+            _SCHEDULE_DAY_ORDER.asc(),
             ProductPost.id.asc(),
         )
     if effective == "published":
@@ -88,6 +95,7 @@ def _to_response(p: ProductPost) -> ProductResponse:
         condition=getattr(p, "condition", None) or "new",
         availability=getattr(p, "availability", None) or "single",
         extra_details=_extra_details_dict(getattr(p, "extra_details", "{}")),
+        schedule_date=p.schedule_date,
         schedule_day=p.schedule_day,
         schedule_time=p.schedule_time,
         status=p.status.value,
@@ -104,7 +112,7 @@ def _to_response(p: ProductPost) -> ProductResponse:
 def _apply_schedule_status(p: ProductPost) -> None:
     if p.status in (ProductStatus.PUBLISHED, ProductStatus.PUBLISHING, ProductStatus.DUPLICATE, ProductStatus.MISSING):
         return
-    if p.schedule_day and p.schedule_time:
+    if _product_has_schedule(p):
         p.status = ProductStatus.SCHEDULED
     elif p.status == ProductStatus.SCHEDULED:
         p.status = ProductStatus.PENDING
@@ -142,7 +150,8 @@ def _product_from_row(
         condition=row.condition or "new",
         availability=row.availability or "single",
         extra_details=json.dumps(row.extra_details),
-        schedule_day=row.schedule_day,
+        schedule_date=row.schedule_date,
+        schedule_day=None,
         schedule_time=row.schedule_time,
         status=status,
         content_hash=content_hash,
@@ -179,10 +188,8 @@ def product_stats(
 @router.get("/image-proxy")
 async def product_image_proxy(
     url: str = Query(..., min_length=8, max_length=2048),
-    _: None = Depends(require_db_ready),
-    __: User = Depends(get_current_user),
 ):
-    """Fetch external product images server-side so the browser always displays CSV URLs."""
+    """Fetch external product images server-side (public — img tags cannot send JWT)."""
     target = url.strip()
     parsed = urlparse(target)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
@@ -374,6 +381,17 @@ def update_product(
         product.availability = data.availability.strip() or "single"
     if data.extra_details is not None:
         product.extra_details = json.dumps(data.extra_details)
+    if data.schedule_date is not None:
+        from app.services.product_csv import parse_schedule_date
+
+        if data.schedule_date:
+            parsed = parse_schedule_date(data.schedule_date)
+            if not parsed:
+                raise HTTPException(status_code=400, detail="Invalid schedule_date — use YYYY-MM-DD or DD/MM/YYYY")
+            product.schedule_date = parsed
+            product.schedule_day = None
+        else:
+            product.schedule_date = None
     if data.schedule_day is not None:
         product.schedule_day = data.schedule_day or None
     if data.schedule_time is not None:
@@ -437,11 +455,12 @@ def retry_failed_product(
     if product.retry_count >= MAX_PRODUCT_RETRIES:
         raise HTTPException(status_code=400, detail=f"Maximum retries ({MAX_PRODUCT_RETRIES}) reached")
 
-    from app.services.product_posting_service import WEEKDAY_CODES, _now_local
+    from app.services.product_posting_service import _now_local
 
     now = _now_local()
     product.error_message = None
-    product.schedule_day = WEEKDAY_CODES[now.weekday()]
+    product.schedule_date = now.strftime("%Y-%m-%d")
+    product.schedule_day = None
     product.schedule_time = f"{now.hour:02d}:{now.minute:02d}"
     product.status = ProductStatus.SCHEDULED
     db.commit()

@@ -6,16 +6,7 @@ import io
 import json
 import re
 from dataclasses import dataclass, field
-
-DAY_ALIASES = {
-    "mon": "mon", "monday": "mon", "lun": "mon", "lunedì": "mon", "lunedì": "mon",
-    "tue": "tue", "tuesday": "tue", "mar": "tue", "martedì": "tue", "martedi": "tue",
-    "wed": "wed", "wednesday": "wed", "mer": "wed", "mercoledì": "wed", "mercoledi": "wed",
-    "thu": "thu", "thursday": "thu", "gio": "thu", "giovedì": "thu", "giovedi": "thu",
-    "fri": "fri", "friday": "fri", "ven": "fri", "venerdì": "fri", "venerdi": "fri",
-    "sat": "sat", "saturday": "sat", "sab": "sat", "sabato": "sat",
-    "sun": "sun", "sunday": "sun", "dom": "sun", "domenica": "sun",
-}
+from datetime import datetime
 
 CONDITION_ALIASES = {
     "new": "new", "nuovo": "new", "nuova": "new", "nuevo": "new",
@@ -36,7 +27,7 @@ HEADER_MAP = {
     "price": "price", "prezzo": "price", "cost": "price",
     "currency": "currency", "valuta": "currency",
     "images": "images", "image": "images", "immagini": "images", "immagine": "images", "photos": "images",
-    "schedule_day": "schedule_day", "day": "schedule_day", "giorno": "schedule_day", "weekday": "schedule_day",
+    "schedule_date": "schedule_date", "date": "schedule_date", "data": "schedule_date", "giorno": "schedule_date",
     "schedule_time": "schedule_time", "time": "schedule_time", "ora": "schedule_time", "hour": "schedule_time",
     "category": "category", "categoria": "category", "cat": "category",
     "condition": "condition", "condizione": "condition", "cond": "condition",
@@ -53,7 +44,7 @@ REQUIRED_COLUMNS = (
     "category",
     "condition",
     "availability",
-    "schedule_day",
+    "schedule_date",
     "schedule_time",
 )
 
@@ -67,7 +58,7 @@ class ParsedProductRow:
     price: float | None
     currency: str
     images: list[str]
-    schedule_day: str | None
+    schedule_date: str | None
     schedule_time: str | None
     category: str | None = None
     condition: str = "new"
@@ -125,11 +116,25 @@ def _parse_images(value: str) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
-def _parse_day(value: str) -> str | None:
+def parse_schedule_date(value: str) -> str | None:
+    """Return YYYY-MM-DD or None."""
     if not value or not str(value).strip():
         return None
-    key = str(value).strip().lower()
-    return DAY_ALIASES.get(key, key[:3] if len(key) >= 3 else None)
+    raw = str(value).strip()
+
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", raw):
+        try:
+            datetime.strptime(raw, "%Y-%m-%d")
+            return raw
+        except ValueError:
+            return None
+
+    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d/%m/%y", "%d-%m-%y", "%d.%m.%y"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
 
 
 def _parse_time(value: str) -> str | None:
@@ -203,8 +208,8 @@ def _missing_fields_from_cells(cells: dict[str, str]) -> list[str]:
         missing.append("condition")
     if not cells.get("availability", "").strip():
         missing.append("availability")
-    if not _parse_day(cells.get("schedule_day", "")):
-        missing.append("schedule_day")
+    if not parse_schedule_date(cells.get("schedule_date", "")):
+        missing.append("schedule_date")
     if not _parse_time(cells.get("schedule_time", "")):
         missing.append("schedule_time")
     return missing
@@ -247,7 +252,7 @@ def parse_products_csv(content: bytes, *, encoding: str = "utf-8-sig") -> CsvPar
         price = _parse_price(raw_cells["price"])
         currency = (raw_cells.get("currency") or "EUR").upper()[:10]
         images = _parse_images(raw_cells["images"])
-        schedule_day = _parse_day(raw_cells["schedule_day"])
+        schedule_date = parse_schedule_date(raw_cells["schedule_date"])
         schedule_time = _parse_time(raw_cells["schedule_time"])
         category = raw_cells["category"] or None
         condition = _parse_condition(raw_cells["condition"]) or "new"
@@ -266,7 +271,7 @@ def parse_products_csv(content: bytes, *, encoding: str = "utf-8-sig") -> CsvPar
             price=price,
             currency=currency,
             images=images,
-            schedule_day=schedule_day,
+            schedule_date=schedule_date,
             schedule_time=schedule_time,
             category=category,
             condition=condition,

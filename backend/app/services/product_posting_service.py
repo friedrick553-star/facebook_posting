@@ -103,44 +103,60 @@ def _day_code_to_weekday(code: str) -> int | None:
     return WEEKDAY_CODES.index(key)
 
 
-def _is_due(product: ProductPost, now: datetime) -> bool:
-    if product.status != ProductStatus.SCHEDULED:
-        return False
-    if not product.schedule_day or not product.schedule_time:
-        return False
-    day_code = WEEKDAY_CODES[now.weekday()]
-    if product.schedule_day.lower()[:3] != day_code:
-        return False
+def _parse_time_parts(time_str: str) -> tuple[int, int] | None:
     try:
-        h, m = product.schedule_time.split(":")
-        sched_minutes = int(h) * 60 + int(m)
+        h, m = map(int, (time_str or "").split(":"))
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return h, m
     except ValueError:
-        return False
-    now_minutes = now.hour * 60 + now.minute
-    return now_minutes >= sched_minutes
+        pass
+    return None
 
 
-def next_due_moment(product: ProductPost, now: datetime) -> datetime | None:
-    """Italy-local datetime when this scheduled product becomes due (today or next weekday)."""
-    if product.status != ProductStatus.SCHEDULED:
+def scheduled_moment(product: ProductPost) -> datetime | None:
+    """Italy-local datetime when this product is scheduled to publish."""
+    if not product.schedule_time:
         return None
-    if not product.schedule_day or not product.schedule_time:
+    parts = _parse_time_parts(product.schedule_time)
+    if parts is None:
+        return None
+    h, m = parts
+
+    if product.schedule_date:
+        try:
+            y, mo, d = map(int, product.schedule_date.split("-"))
+            return datetime(y, mo, d, h, m, 0, tzinfo=POSTING_TZ)
+        except ValueError:
+            return None
+
+    # Legacy weekday scheduling (pre schedule_date migration)
+    if not product.schedule_day:
         return None
     target_wd = _day_code_to_weekday(product.schedule_day)
     if target_wd is None:
         return None
-    try:
-        h, m = map(int, product.schedule_time.split(":"))
-    except ValueError:
-        return None
-
+    now = _now_local()
     candidate = now.replace(hour=h, minute=m, second=0, microsecond=0)
     days_ahead = (target_wd - now.weekday()) % 7
-    if days_ahead == 0:
-        if candidate <= now:
-            return candidate
+    if days_ahead == 0 and candidate <= now:
         return candidate
     return candidate + timedelta(days=days_ahead)
+
+
+def _is_due(product: ProductPost, now: datetime) -> bool:
+    if product.status != ProductStatus.SCHEDULED:
+        return False
+    moment = scheduled_moment(product)
+    if moment is None:
+        return False
+    return now >= moment
+
+
+def next_due_moment(product: ProductPost, now: datetime) -> datetime | None:
+    """Italy-local datetime when this scheduled product becomes due."""
+    if product.status != ProductStatus.SCHEDULED:
+        return None
+    return scheduled_moment(product)
 
 
 def pick_next_scheduled(db: Session, user_id: int, now: datetime) -> tuple[ProductPost | None, datetime | None]:
@@ -539,7 +555,7 @@ async def _posting_wait_loop(user_id: int, cancel: asyncio.Event) -> None:
                     open_at = due_at - timedelta(seconds=REFRESH_BEFORE_SEC)
                     log_activity_isolated(
                         LogCategory.MONITORING,
-                        f"Next post: {product.name[:50]} at {due_at.strftime('%a %H:%M')} (Italy)",
+                        f"Next post: {product.name[:50]} at {due_at.strftime('%d/%m/%Y %H:%M')} (Italy)",
                         details={
                             "product_id": product.id,
                             "chromium_opens_at": open_at.isoformat(),
