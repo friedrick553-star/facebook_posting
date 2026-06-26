@@ -31,6 +31,92 @@ CONDITION_LABELS = {
     "used": ("Used", "Usato", "Usata", "Usado"),
 }
 
+CONDITION_BUCKET_HINTS = {
+    "new": ("new", "nuovo", "nuova", "nuevo"),
+    "used": (
+        "used", "usato", "usata", "usado", "like new", "good", "fair",
+        "come nuovo", "buone", "buono", "buona", "accettabil", "discret",
+    ),
+}
+
+
+def _dedupe_terms(terms: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in terms:
+        tl = t.lower().strip()
+        if tl and tl not in seen:
+            seen.add(tl)
+            out.append(t.strip())
+    return out
+
+
+def _condition_search_terms(condition: str) -> tuple[str, list[str]]:
+    """Map CSV condition (even vague 'used') to picker labels / fuzzy needles."""
+    raw = (condition or "new").strip()
+    lower = raw.lower()
+    terms: list[str] = []
+    bucket = "new"
+
+    if any(k in lower for k in ("like new", "like-new", "like_new", "come nuovo", "quasi nuovo")):
+        bucket = "used"
+        terms.extend(["Like New", "Come nuovo", "Usato - Come nuovo", "Used - Like New"])
+    elif any(k in lower for k in ("good", "buone condizioni", "buone", "buono", "buona", "good condition")):
+        bucket = "used"
+        terms.extend(["Good", "Buone condizioni", "Used - Good", "Buone", "Buono"])
+    elif any(k in lower for k in ("fair", "discreto", "discreta", "accettabil", "fair condition")):
+        bucket = "used"
+        terms.extend(["Fair", "Accettabile", "Condizioni accettabili", "Used - Fair"])
+    elif any(k in lower for k in ("used", "usato", "usata", "usado", "second hand", "secondhand")):
+        bucket = "used"
+        terms.extend(list(CONDITION_LABELS["used"]))
+        terms.extend([
+            "Like New", "Good", "Fair",
+            "Come nuovo", "Buone condizioni", "Condizioni accettabili",
+        ])
+    elif any(k in lower for k in ("new", "nuovo", "nuova", "nuevo", "nuovi")):
+        bucket = "new"
+        terms.extend(list(CONDITION_LABELS["new"]))
+    else:
+        terms.append(raw)
+        if any(k in lower for k in ("us", "usat", "good", "fair", "like")):
+            bucket = "used"
+            terms.extend(list(CONDITION_LABELS["used"]))
+        else:
+            terms.extend(list(CONDITION_LABELS["new"]))
+
+    return bucket, _dedupe_terms(terms)
+
+
+def _option_text_matches_any(text: str, needles: list[str]) -> bool:
+    line = (text or "").lower().strip()
+    if not line:
+        return False
+    for needle in needles:
+        nl = needle.lower().strip()
+        if not nl:
+            continue
+        if nl in line or line in nl:
+            return True
+        for word in re.split(r"[\s\-_/]+", nl):
+            if len(word) >= 3 and word in line:
+                return True
+    return False
+
+
+def _looks_like_condition_option(text: str) -> bool:
+    lower = (text or "").lower()
+    return any(h in lower for h in CONDITION_BUCKET_HINTS["new"] + CONDITION_BUCKET_HINTS["used"])
+
+
+def _category_words(csv_category: str) -> list[str]:
+    words: list[str] = []
+    for part in re.split(r"[\s&/,\-]+", csv_category):
+        w = part.strip()
+        if len(w) >= 3:
+            words.append(w)
+    return words
+
 AVAILABILITY_LABELS = {
     "single": (
         "List as a single item",
@@ -788,15 +874,8 @@ async def _category_search_terms(csv_category: str | None) -> list[str]:
         return []
     key = csv_category.strip().lower()
     mapped = CATEGORY_FB_SEARCH.get(key, [])
-    terms = mapped + [csv_category.strip()]
-    seen: set[str] = set()
-    out: list[str] = []
-    for t in terms:
-        tl = t.lower()
-        if tl not in seen:
-            seen.add(tl)
-            out.append(t)
-    return out
+    terms = mapped + [csv_category.strip()] + _category_words(csv_category)
+    return _dedupe_terms(terms)
 
 
 def _category_option_first_line(option_text: str) -> str:
@@ -904,7 +983,13 @@ async def _scroll_picker_and_pick(page: Page, terms: list[str], log, *, context:
                     text = (await cand.inner_text()).strip()
                     if not text or len(text) > 80:
                         continue
-                    if not _category_option_matches(term, text):
+                    if context == "category":
+                        if not _category_option_matches(term, text):
+                            continue
+                    elif context == "condition":
+                        if not _option_text_matches_any(text, [term]):
+                            continue
+                    elif term.lower() not in text.lower():
                         continue
                     await _scroll_into_view(cand)
                     await cand.click(timeout=6000)
@@ -931,6 +1016,83 @@ async def _scroll_picker_and_pick(page: Page, terms: list[str], log, *, context:
     return None
 
 
+async def _pick_visible_fuzzy_option(
+    page: Page,
+    log,
+    *,
+    context: str,
+    needles: list[str],
+    bucket: str | None = None,
+) -> str | None:
+    """Pick a visible option matching CSV words, else any bucket match, else first reasonable row."""
+    bucket_needles: list[str] = []
+    if bucket == "used":
+        bucket_needles = list(CONDITION_BUCKET_HINTS["used"])
+    elif bucket == "new":
+        bucket_needles = list(CONDITION_BUCKET_HINTS["new"])
+
+    selectors = ('[role="option"]', '[role="radio"]', 'div[role="button"]', "label")
+    candidates: list[tuple[Locator, str]] = []
+    seen_text: set[str] = set()
+
+    for sel in selectors:
+        loc = page.locator(sel)
+        try:
+            count = await loc.count()
+            for i in range(min(count, 50)):
+                el = loc.nth(i)
+                if not await el.is_visible(timeout=400):
+                    continue
+                text = (await el.inner_text()).strip().split("\n")[0].strip()
+                if not text or len(text) > 100:
+                    continue
+                tl = text.lower()
+                if tl in seen_text:
+                    continue
+                if context == "condition" and not _looks_like_condition_option(text):
+                    continue
+                seen_text.add(tl)
+                candidates.append((el, text))
+        except Exception:
+            continue
+
+    for el, text in candidates:
+        if _option_text_matches_any(text, needles):
+            try:
+                await _scroll_into_view(el)
+                await el.click(timeout=6000)
+                await _human_pause(0.8, 1.5)
+                log(f"Selected {context} (fuzzy match)", {"picked": text, "csv": needles[:4]})
+                return text
+            except Exception:
+                continue
+
+    if bucket and bucket_needles:
+        for el, text in candidates:
+            if _option_text_matches_any(text, bucket_needles):
+                try:
+                    await _scroll_into_view(el)
+                    await el.click(timeout=6000)
+                    await _human_pause(0.8, 1.5)
+                    log(f"Selected {context} (closest bucket match)", {"picked": text, "bucket": bucket})
+                    return text
+                except Exception:
+                    continue
+
+    if candidates and context in ("condition", "category"):
+        el, text = candidates[0]
+        try:
+            await _scroll_into_view(el)
+            await el.click(timeout=6000)
+            await _human_pause(0.8, 1.5)
+            log(f"Selected {context} (first visible fallback)", {"picked": text})
+            return text
+        except Exception:
+            pass
+
+    return None
+
+
 async def _select_category(page: Page, csv_category: str | None, log) -> bool:
     if not csv_category:
         return False
@@ -946,6 +1108,11 @@ async def _select_category(page: Page, csv_category: str | None, log) -> bool:
     if picked:
         return True
 
+    fuzzy = _category_words(csv_category) + terms
+    picked = await _pick_visible_fuzzy_option(page, log, context="category", needles=fuzzy)
+    if picked:
+        return True
+
     try:
         await page.keyboard.press("Escape")
     except Exception:
@@ -955,9 +1122,8 @@ async def _select_category(page: Page, csv_category: str | None, log) -> bool:
 
 
 async def _select_condition(page: Page, condition: str, log) -> bool:
-    key = "used" if condition.lower() in ("used", "usato", "usata", "usado") else "new"
-    labels = CONDITION_LABELS[key]
-    log("Condition — click option (no typing)", {"condition": key})
+    bucket, labels = _condition_search_terms(condition)
+    log("Condition — click option (no typing)", {"csv": condition, "bucket": bucket, "targets": labels[:8]})
 
     for text in labels:
         for factory in (
@@ -985,6 +1151,12 @@ async def _select_condition(page: Page, condition: str, log) -> bool:
         picked = await _scroll_picker_and_pick(page, list(labels), log, context="condition")
         if picked:
             return True
+
+    picked = await _pick_visible_fuzzy_option(
+        page, log, context="condition", needles=list(labels), bucket=bucket,
+    )
+    if picked:
+        return True
 
     log("Condition not found on current step")
     return False
@@ -1722,6 +1894,10 @@ async def publish_marketplace_item(
             else "Dry run stopped — Next click or Publish screen not reached",
             {"url": page.url, "publish_visible": on_publish},
         )
+        if not on_publish:
+            raise RuntimeError(
+                "Dry run failed — could not reach Publish screen (Next not clicked or Pubblica not visible)"
+            )
         if return_to_marketplace_after and context is not None:
             await _return_to_marketplace_home(page, context, cfg, log)
         else:

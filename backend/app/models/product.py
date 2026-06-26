@@ -14,6 +14,7 @@ class ProductStatus(str, enum.Enum):
     PUBLISHING = "publishing"
     PUBLISHED = "published"
     FAILED = "failed"
+    MISSED = "missed"
     DUPLICATE = "duplicate"
     MISSING = "missing"
 
@@ -24,6 +25,7 @@ CATALOG_STATUSES = (
     ProductStatus.PUBLISHING,
     ProductStatus.PUBLISHED,
     ProductStatus.FAILED,
+    ProductStatus.MISSED,
 )
 
 

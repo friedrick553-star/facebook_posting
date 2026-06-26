@@ -14,6 +14,7 @@ import { Badge, Spinner } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 import ProductImage from "@/components/products/ProductImage"
 import { formatScheduleDisplay, normalizeScheduleDate, todayIsoDate } from "@/lib/schedule"
+import { formatAppDateTime } from "@/lib/datetime"
 
 export type ProductStatusKind = "scheduled" | "published" | "pending" | "failed" | "duplicate" | "missing"
 
@@ -125,18 +126,13 @@ function formatPrice(price: number | null, currency: string) {
   return `${currency} ${price.toLocaleString()}`
 }
 
-function formatDateTime(iso: string | null) {
-  if (!iso) return "—"
-  return new Date(iso).toLocaleString()
-}
-
 function formatSchedule(date: string | null, time: string | null) {
   return formatScheduleDisplay(date, time)
 }
 
 export default function ProductStatusPage({ kind }: { kind: ProductStatusKind }) {
   const config = PAGE_CONFIG[kind]
-  const { t } = useLanguage()
+  const { t, language } = useLanguage()
   const { toast } = useToast()
   const { refreshStats } = useProductsData()
   const { isAdmin } = useAuth()
@@ -198,7 +194,7 @@ export default function ProductStatusPage({ kind }: { kind: ProductStatusKind })
         schedule_date: draft.schedule_date,
         schedule_time: draft.schedule_time,
       })
-      if (kind === "pending" && updated.status === "scheduled") {
+      if ((kind === "pending" || kind === "failed") && updated.status === "scheduled") {
         setProducts((prev) => prev.filter((p) => p.id !== updated.id))
         setTotal((n) => Math.max(0, n - 1))
         await refreshStats()
@@ -425,7 +421,7 @@ export default function ProductStatusPage({ kind }: { kind: ProductStatusKind })
                       )}
                       {config.showPublishedAt && (
                         <td className="p-3 whitespace-nowrap text-muted-foreground">
-                          {formatDateTime(p.published_at)}
+                          {p.published_at ? formatAppDateTime(p.published_at, language) : "—"}
                         </td>
                       )}
                       {config.showFacebookUrl && (

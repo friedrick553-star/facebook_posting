@@ -255,7 +255,7 @@ async def _create_context(
     path = session_file(cfg)
     context_kwargs: dict = {
         "locale": cfg.BROWSER_LOCALE,
-        "timezone_id": cfg.BROWSER_TIMEZONE,
+        "timezone_id": cfg.posting_timezone,
         "extra_http_headers": {
             "Accept-Language": f"{cfg.BROWSER_LOCALE},it;q=0.9,en;q=0.8",
         },

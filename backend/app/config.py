@@ -57,12 +57,17 @@ class Settings(BaseSettings):
     # Facebook — manual login in browser; reminder email after 5 min if not logged in
     # Posting app: stay on Marketplace after login — skip /vehicles, filters, listing scrape
     STOP_AFTER_MARKETPLACE: bool = True
-    # Chromium + Facebook UI language (Italian user)
+    # Chromium + Facebook UI — always Italy (Europe/Rome), not UTC or PC local time
     BROWSER_LOCALE: str = "it-IT"
     BROWSER_TIMEZONE: str = "Europe/Rome"
     FACEBOOK_ORIGIN: str = "https://it-it.facebook.com"
     FACEBOOK_SESSION_FILE: str = "data/facebook_session.json"
     FACEBOOK_PROFILE_DIR: str = "data/facebook_chrome_profile"
+
+    @property
+    def posting_timezone(self) -> str:
+        """Scheduling always uses Italy — ignore accidental .env overrides."""
+        return "Europe/Rome"
 
     @property
     def admin_email(self) -> str:

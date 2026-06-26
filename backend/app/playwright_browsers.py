@@ -11,7 +11,7 @@ BROWSERS_DIR = BACKEND_ROOT / "playwright-browsers"
 def configure_playwright_browsers_path() -> Path:
     """All Playwright browser downloads go to backend/playwright-browsers/."""
     BROWSERS_DIR.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(BROWSERS_DIR.resolve()))
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(BROWSERS_DIR.resolve())
     return BROWSERS_DIR
 
 

@@ -1,4 +1,4 @@
-import { Package, CalendarClock, CheckCircle2, AlertTriangle, Copy, FileWarning } from "lucide-react"
+import { Package, CalendarClock, CheckCircle2, AlertTriangle, Copy, FileWarning, Info } from "lucide-react"
 import { Link } from "react-router-dom"
 import { useProductsData } from "@/contexts/ProductsDataContext"
 import { useLanguage } from "@/contexts/LanguageContext"
@@ -24,6 +24,11 @@ export default function DashboardPage() {
         <StatCard title={t("dashboard.duplicates")} value={stats.duplicate} icon={Copy} to="/duplicates" />
         <StatCard title={t("dashboard.failed")} value={stats.failed} icon={AlertTriangle} to="/failed" />
         <StatCard title={t("dashboard.missing")} value={stats.missing ?? 0} icon={FileWarning} to="/missing" />
+      </div>
+
+      <div className="rounded-lg border border-[#1877F2]/30 bg-[#1877F2]/5 px-4 py-3 flex gap-3 max-w-3xl">
+        <Info className="h-5 w-5 text-[#1877F2] shrink-0 mt-0.5" />
+        <p className="text-sm text-foreground">{t("dashboard.timezoneNotice")}</p>
       </div>
 
       <Card className="max-w-2xl">

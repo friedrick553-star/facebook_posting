@@ -285,7 +285,7 @@ class MonitoringService:
             if cfg.STOP_AFTER_MARKETPLACE:
                 log_activity(
                     db, LogCategory.MONITORING,
-                    "Bot ON — Chromium opens on Start when no Facebook session; otherwise when a product is due",
+                    "Bot ON — idle: Marketplace peek on Start; scheduled: Chromium ~3s before post time (Italy)",
                     source="monitor",
                 )
                 db.commit()
@@ -305,9 +305,11 @@ class MonitoringService:
                     return {"status": "off", **stats}
 
                 from app.services.product_posting_service import (
-                    prepare_browser_on_bot_start,
+                    has_scheduled_products,
+                    is_test_full_flow_done,
+                    run_marketplace_peek_on_start,
                     run_test_full_flow,
-                    should_open_browser_on_start,
+                    should_run_marketplace_peek_on_start,
                     start_posting_loop,
                 )
 
@@ -315,23 +317,7 @@ class MonitoringService:
                     MonitoringSetting.user_id == user_id
                 ).first()
 
-                if monitoring and should_open_browser_on_start(db, user_id, monitoring):
-                    try:
-                        await prepare_browser_on_bot_start(user_id, db)
-                    except Exception as exc:
-                        stats["errors"] += 1
-                        logger.exception("Open Chromium on Start failed: %s", exc)
-                        log_activity(
-                            db, LogCategory.ERROR,
-                            f"Could not open Chromium on Start: {exc}",
-                            level=LogLevel.ERROR,
-                            source="posting",
-                        )
-                        db.commit()
-
                 if monitoring and getattr(monitoring, "test_full_flow", False):
-                    from app.services.product_posting_service import is_test_full_flow_done
-
                     if not is_test_full_flow_done(user_id):
                         log_activity(
                             db, LogCategory.MONITORING,
@@ -350,6 +336,27 @@ class MonitoringService:
                                 level=LogLevel.ERROR,
                                 source="posting",
                             )
+                            db.commit()
+                elif should_run_marketplace_peek_on_start(db, user_id, monitoring):
+                    try:
+                        await run_marketplace_peek_on_start(user_id, db)
+                    except Exception as exc:
+                        stats["errors"] += 1
+                        logger.exception("Marketplace peek on Start failed: %s", exc)
+                        log_activity(
+                            db, LogCategory.ERROR,
+                            f"Could not open Marketplace on Start: {exc}",
+                            level=LogLevel.ERROR,
+                            source="posting",
+                        )
+                        db.commit()
+                elif has_scheduled_products(db, user_id):
+                    log_activity(
+                        db, LogCategory.MONITORING,
+                        "Scheduled products waiting — Chromium opens ~3s before post time (Europe/Rome)",
+                        source="posting",
+                    )
+                    db.commit()
 
                 await start_posting_loop(user_id)
                 return {"status": "completed" if stats["errors"] == 0 else "failed", **stats}

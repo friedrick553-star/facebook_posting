@@ -57,6 +57,7 @@ function AppRoutes() {
         <Route path="published" element={<ProductStatusPage kind="published" />} />
         <Route path="pending" element={<ProductStatusPage kind="pending" />} />
         <Route path="failed" element={<ProductStatusPage kind="failed" />} />
+        <Route path="missed" element={<Navigate to="/failed" replace />} />
         <Route path="duplicates" element={<ProductStatusPage kind="duplicate" />} />
         <Route path="missing" element={<ProductStatusPage kind="missing" />} />
         <Route path="logs" element={<LogsPage />} />

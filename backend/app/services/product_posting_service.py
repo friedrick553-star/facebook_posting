@@ -4,11 +4,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import tempfile
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
-
+from app.core.timezone import (
+    POSTING_TIMEZONE,
+    POSTING_TZ,
+    italy_now_display,
+    italy_now_iso,
+    italy_utc_offset,
+    now_italy,
+    parse_schedule_datetime,
+)
 import httpx
 from sqlalchemy.orm import Session
 
@@ -24,19 +33,24 @@ from app.services.user_workspace import reset_workspace_user_id, set_workspace_u
 
 logger = logging.getLogger(__name__)
 
-POSTING_TZ = ZoneInfo("Europe/Rome")
-WEEKDAY_CODES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 MAX_RETRIES = 5
 REFRESH_BEFORE_SEC = 3.5
-IDLE_POLL_SEC = 15.0
+# After scheduled minute: bot may open Chromium, publish, retry — only then mark Failed
+PUBLISH_GRACE_AFTER_SEC = 300.0
+IDLE_POLL_SEC = 2.0
 POST_PUBLISH_STAY_SEC = 12.0
 TEST_PUBLISH_SCREEN_SEC = 5.5
+MARKETPLACE_PEEK_SEC = 10.0
 
-_posting_lock = asyncio.Lock()
+WEEKDAY_CODES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+_posting_thread_lock = threading.Lock()
 _posting_loop_tasks: dict[int, asyncio.Task] = {}
 _posting_loop_cancel: dict[int, asyncio.Event] = {}
+_posting_loop_active: set[int] = set()
+_posting_state_lock = threading.Lock()
 _test_full_flow_done: set[int] = set()
-# Dry-run keeps status SCHEDULED — track ids already handled this bot session to avoid re-posting.
+# Dry-run session skip — track ids already published this bot session to avoid re-posting.
 _session_posted_ids: dict[int, set[int]] = {}
 
 
@@ -71,9 +85,26 @@ def clear_session_posted(user_id: int) -> None:
     _session_posted_ids.pop(user_id, None)
 
 
+def unmark_session_posted(user_id: int, product_id: int) -> None:
+    posted = _session_posted_ids.get(user_id)
+    if posted is not None:
+        posted.discard(product_id)
+
+
 def is_posting_loop_active(user_id: int) -> bool:
+    with _posting_state_lock:
+        if user_id in _posting_loop_active:
+            return True
     task = _posting_loop_tasks.get(user_id)
     return task is not None and not task.done()
+
+
+def _set_posting_loop_active(user_id: int, active: bool) -> None:
+    with _posting_state_lock:
+        if active:
+            _posting_loop_active.add(user_id)
+        else:
+            _posting_loop_active.discard(user_id)
 
 
 def is_test_full_flow_done(user_id: int) -> bool:
@@ -93,7 +124,7 @@ def _session_skip_ids(user_id: int) -> set[int]:
 
 
 def _now_local() -> datetime:
-    return datetime.now(POSTING_TZ)
+    return now_italy()
 
 
 def _day_code_to_weekday(code: str) -> int | None:
@@ -123,11 +154,7 @@ def scheduled_moment(product: ProductPost) -> datetime | None:
     h, m = parts
 
     if product.schedule_date:
-        try:
-            y, mo, d = map(int, product.schedule_date.split("-"))
-            return datetime(y, mo, d, h, m, 0, tzinfo=POSTING_TZ)
-        except ValueError:
-            return None
+        return parse_schedule_datetime(product.schedule_date, product.schedule_time)
 
     # Legacy weekday scheduling (pre schedule_date migration)
     if not product.schedule_day:
@@ -143,13 +170,107 @@ def scheduled_moment(product: ProductPost) -> datetime | None:
     return candidate + timedelta(days=days_ahead)
 
 
+def _publish_grace_deadline(moment: datetime) -> datetime:
+    return moment + timedelta(seconds=PUBLISH_GRACE_AFTER_SEC)
+
+
+def _is_within_publish_window(moment: datetime | None, now: datetime) -> bool:
+    """True from ~REFRESH_BEFORE before due until PUBLISH_GRACE_AFTER after due."""
+    if moment is None:
+        return False
+    window_start = moment - timedelta(seconds=REFRESH_BEFORE_SEC + 1.0)
+    return window_start <= now <= _publish_grace_deadline(moment)
+
+
+def _is_actionable_schedule(moment: datetime | None, now: datetime) -> bool:
+    """Bot can still open Chromium / publish (future slot or overdue within grace)."""
+    if moment is None:
+        return False
+    return now <= _publish_grace_deadline(moment)
+
+
+def _is_future_schedule(moment: datetime | None, now: datetime) -> bool:
+    return moment is not None and moment > now
+
+
+def _session_blocks_pick(user_id: int, product_id: int, moment: datetime | None, now: datetime) -> bool:
+    """Already published this session — never block a future slot; only skip after due window ended."""
+    if product_id not in _session_skip_ids(user_id):
+        return False
+    if moment is None:
+        return True
+    if moment > now:
+        return False
+    if _is_within_publish_window(moment, now):
+        return False
+    return True
+
+
+def mark_past_schedules_missed(db: Session, user_id: int, now: datetime | None = None) -> int:
+    """Move scheduled slots to FAILED only after publish grace expired (bot had time to run)."""
+    now = now or _now_local()
+    moved = 0
+
+    legacy = (
+        db.query(ProductPost)
+        .filter(
+            ProductPost.user_id == user_id,
+            ProductPost.status == ProductStatus.MISSED,
+        )
+        .all()
+    )
+    for product in legacy:
+        product.status = ProductStatus.FAILED
+        if not product.error_message:
+            moment = scheduled_moment(product)
+            if moment:
+                product.error_message = (
+                    f"Missed scheduled time ({moment.strftime('%d/%m/%Y %H:%M')} Italy)"
+                )
+        moved += 1
+
+    rows = (
+        db.query(ProductPost)
+        .filter(
+            ProductPost.user_id == user_id,
+            ProductPost.status == ProductStatus.SCHEDULED,
+        )
+        .all()
+    )
+    for product in rows:
+        moment = scheduled_moment(product)
+        if moment is None or now <= _publish_grace_deadline(moment):
+            continue
+        product.status = ProductStatus.FAILED
+        product.error_message = (
+            f"Missed scheduled time ({moment.strftime('%d/%m/%Y %H:%M')} Italy)"
+        )
+        moved += 1
+    if moved:
+        db.commit()
+        log_activity(
+            db,
+            LogCategory.MONITORING,
+            f"Moved {moved} past schedule(s) to Failed — set a new date/time to retry",
+            details={"user_id": user_id, "count": moved},
+            source="posting",
+        )
+        db.commit()
+    return moved
+
+
+def expire_stale_scheduled(db: Session, user_id: int, now: datetime | None = None) -> int:
+    """Backward-compatible alias — past slots go to FAILED."""
+    return mark_past_schedules_missed(db, user_id, now)
+
+
 def _is_due(product: ProductPost, now: datetime) -> bool:
     if product.status != ProductStatus.SCHEDULED:
         return False
     moment = scheduled_moment(product)
     if moment is None:
         return False
-    return now >= moment
+    return moment <= now <= _publish_grace_deadline(moment)
 
 
 def next_due_moment(product: ProductPost, now: datetime) -> datetime | None:
@@ -160,8 +281,7 @@ def next_due_moment(product: ProductPost, now: datetime) -> datetime | None:
 
 
 def pick_next_scheduled(db: Session, user_id: int, now: datetime) -> tuple[ProductPost | None, datetime | None]:
-    """Next product to post and when to start (now if already due)."""
-    skip_ids = _session_skip_ids(user_id)
+    """Next product: earliest FUTURE slot first; overdue-in-grace only if no future left."""
     candidates = (
         db.query(ProductPost)
         .filter(
@@ -169,29 +289,44 @@ def pick_next_scheduled(db: Session, user_id: int, now: datetime) -> tuple[Produ
             ProductPost.status == ProductStatus.SCHEDULED,
             ProductPost.retry_count < MAX_RETRIES,
         )
-        .order_by(ProductPost.id.asc())
         .all()
     )
-    due_now: ProductPost | None = None
-    next_product: ProductPost | None = None
-    next_moment: datetime | None = None
+
+    best_future: ProductPost | None = None
+    best_future_moment: datetime | None = None
+    best_grace: ProductPost | None = None
+    best_grace_moment: datetime | None = None
 
     for product in candidates:
-        if product.id in skip_ids:
+        moment = scheduled_moment(product)
+        if not _is_actionable_schedule(moment, now):
             continue
-        if _is_due(product, now):
-            due_now = product
-            break
-        moment = next_due_moment(product, now)
-        if moment is None:
+        if _session_blocks_pick(user_id, product.id, moment, now):
             continue
-        if next_moment is None or moment < next_moment:
-            next_product = product
-            next_moment = moment
+        if moment > now:
+            if best_future_moment is None or moment < best_future_moment:
+                best_future = product
+                best_future_moment = moment
+        elif moment <= now:
+            if best_grace_moment is None or moment < best_grace_moment:
+                best_grace = product
+                best_grace_moment = moment
 
-    if due_now:
-        return due_now, now
-    return next_product, next_moment
+    if best_future is not None and best_future_moment is not None:
+        return best_future, best_future_moment
+    if best_grace is not None and best_grace_moment is not None:
+        return best_grace, best_grace_moment
+    return None, None
+
+
+def seconds_until_next_chromium_open(db: Session, user_id: int, now: datetime | None = None) -> float | None:
+    """Seconds until REFRESH_BEFORE opens Chromium for the next actionable slot."""
+    now = now or _now_local()
+    product, due_at = pick_next_scheduled(db, user_id, now)
+    if not product or not due_at:
+        return None
+    open_at = due_at - timedelta(seconds=REFRESH_BEFORE_SEC)
+    return max(0.0, (open_at - now).total_seconds())
 
 
 def get_due_products(db: Session, user_id: int, *, limit: int = 5) -> list[ProductPost]:
@@ -207,7 +342,12 @@ def get_due_products(db: Session, user_id: int, *, limit: int = 5) -> list[Produ
         .limit(50)
         .all()
     )
-    due = [p for p in candidates if p.id not in _session_skip_ids(user_id) and _is_due(p, now)]
+    due = [
+        p
+        for p in candidates
+        if not _session_blocks_pick(user_id, p.id, scheduled_moment(p), now) and _is_due(p, now)
+    ]
+    due.sort(key=lambda p: scheduled_moment(p) or now)
     return due[:limit]
 
 
@@ -286,11 +426,36 @@ async def _refresh_marketplace(user_id: int) -> None:
         reset_workspace_user_id(token)
 
 
-def should_open_browser_on_start(db: Session, user_id: int, monitoring) -> bool:
-    """Open Chromium immediately on Start when no saved session or test full flow is ON."""
+def has_scheduled_products(db: Session, user_id: int) -> bool:
+    """True when user has at least one slot the bot can still act on."""
+    now = _now_local()
+    candidates = (
+        db.query(ProductPost)
+        .filter(
+            ProductPost.user_id == user_id,
+            ProductPost.status == ProductStatus.SCHEDULED,
+            ProductPost.retry_count < MAX_RETRIES,
+        )
+        .limit(100)
+        .all()
+    )
+    for p in candidates:
+        moment = scheduled_moment(p)
+        if _is_actionable_schedule(moment, now) and not _session_blocks_pick(user_id, p.id, moment, now):
+            return True
+    return False
+
+
+def should_run_marketplace_peek_on_start(db: Session, user_id: int, monitoring) -> bool:
+    """Peek on Start only when no demo, no scheduled work, and no saved Facebook cookies."""
     if monitoring and getattr(monitoring, "test_full_flow", False):
-        return True
-    return not has_saved_facebook_session_sync(user_id)
+        if not is_test_full_flow_done(user_id):
+            return False
+    if has_scheduled_products(db, user_id):
+        return False
+    if has_saved_facebook_session_sync(user_id):
+        return False
+    return True
 
 
 def has_saved_facebook_session_sync(user_id: int) -> bool:
@@ -304,16 +469,60 @@ def has_saved_facebook_session_sync(user_id: int) -> bool:
         reset_workspace_user_id(token)
 
 
+async def run_marketplace_peek_on_start(user_id: int, db: Session | None = None) -> None:
+    """Idle Start — open Marketplace, stay ~10s, close (no scheduled products, no demo)."""
+    cfg = get_settings()
+    own_db = db is None
+    if own_db:
+        db = SessionLocal()
+
+    try:
+        log_activity(
+            db,
+            LogCategory.MONITORING,
+            f"Start — opening Marketplace (no scheduled products), closing in {MARKETPLACE_PEEK_SEC:.0f}s",
+            details={"user_id": user_id, "tz": POSTING_TIMEZONE, "italy_now": _now_local().isoformat()},
+            source="posting",
+        )
+        db.commit()
+        await _open_browser_for_user(user_id, wait_for_login=False)
+        fb = get_facebook_source(user_id)
+        if fb.has_live_browser() and fb._page and fb._context:
+            token = set_workspace_user_id(user_id)
+            try:
+                from app.services.facebook_flow import stage_open_marketplace
+
+                def log(msg: str, details: dict | None = None) -> None:
+                    logger.info("%s %s", msg, details or {})
+
+                await stage_open_marketplace(fb._page, cfg, log, context=fb._context)
+                await dismiss_login_popup_once(fb._page)
+                await save_session(fb._context, cfg)
+            finally:
+                reset_workspace_user_id(token)
+        log_activity(
+            db,
+            LogCategory.MONITORING,
+            f"Marketplace open — waiting {MARKETPLACE_PEEK_SEC:.0f}s then closing Chromium",
+            source="posting",
+        )
+        db.commit()
+        await _close_browser_for_user(user_id, wait_sec=MARKETPLACE_PEEK_SEC)
+        log_activity(
+            db,
+            LogCategory.MONITORING,
+            "Marketplace peek complete — Chromium closed",
+            source="posting",
+        )
+        db.commit()
+    finally:
+        if own_db and db:
+            db.close()
+
+
 async def prepare_browser_on_bot_start(user_id: int, db: Session) -> None:
-    """Start ON with no session / test flow — open Chromium right away for Facebook login."""
-    log_activity(
-        db,
-        LogCategory.MONITORING,
-        "Opening Chromium on Start — Facebook Marketplace (log in when the tab opens)",
-        source="posting",
-    )
-    db.commit()
-    await _open_browser_for_user(user_id, wait_for_login=False)
+    """Legacy alias — use run_marketplace_peek_on_start for idle Start."""
+    await run_marketplace_peek_on_start(user_id, db)
 
 
 async def _open_browser_for_user(user_id: int, *, wait_for_login: bool = True) -> None:
@@ -523,10 +732,11 @@ async def _sleep_until(cancel: asyncio.Event, target: datetime) -> bool:
 async def _posting_wait_loop(user_id: int, cancel: asyncio.Event) -> None:
     """Wait for schedule time — open Chromium, publish, stay ~12s, close. Bot stays ON."""
     cfg = get_settings()
+    _set_posting_loop_active(user_id, True)
     log_activity_isolated(
         LogCategory.MONITORING,
-        "Bot ON — waiting for scheduled product time (Chromium opens when a post is due)",
-        details={"user_id": user_id, "locale": cfg.BROWSER_LOCALE, "tz": cfg.BROWSER_TIMEZONE},
+        "Bot ON — waiting for scheduled product time (Chromium opens ~3.5s before due, Italy time)",
+        details={"user_id": user_id, "locale": cfg.BROWSER_LOCALE, "tz": POSTING_TIMEZONE},
         source="posting",
     )
 
@@ -538,6 +748,7 @@ async def _posting_wait_loop(user_id: int, cancel: asyncio.Event) -> None:
             db = SessionLocal()
             try:
                 now = _now_local()
+                mark_past_schedules_missed(db, user_id, now)
                 product, due_at = pick_next_scheduled(db, user_id, now)
 
                 if not product or due_at is None:
@@ -548,31 +759,51 @@ async def _posting_wait_loop(user_id: int, cancel: asyncio.Event) -> None:
                                 await save_session(fb._context, cfg)
                         except Exception:
                             pass
-                    await asyncio.sleep(IDLE_POLL_SEC)
+                    wait_sec = seconds_until_next_chromium_open(db, user_id, now)
+                    if wait_sec is not None:
+                        if wait_sec > 5:
+                            await asyncio.sleep(min(wait_sec - 1.0, 30.0))
+                        else:
+                            await asyncio.sleep(max(0.5, wait_sec))
+                    else:
+                        await asyncio.sleep(IDLE_POLL_SEC)
                     continue
 
-                if due_at > now:
-                    open_at = due_at - timedelta(seconds=REFRESH_BEFORE_SEC)
-                    log_activity_isolated(
-                        LogCategory.MONITORING,
-                        f"Next post: {product.name[:50]} at {due_at.strftime('%d/%m/%Y %H:%M')} (Italy)",
-                        details={
-                            "product_id": product.id,
-                            "chromium_opens_at": open_at.isoformat(),
-                        },
-                        source="posting",
-                    )
-                    if open_at > now:
-                        if not await _sleep_until(cancel, open_at):
-                            break
+                open_at = due_at - timedelta(seconds=REFRESH_BEFORE_SEC)
+                log_activity_isolated(
+                    LogCategory.MONITORING,
+                    f"Next post: {product.name[:50]} at {due_at.strftime('%d/%m/%Y %H:%M')} Italy "
+                    f"(now Italy {now.strftime('%d/%m/%Y %H:%M:%S')}, Chromium ~{REFRESH_BEFORE_SEC}s before)",
+                    details={
+                        "product_id": product.id,
+                        "schedule_date": product.schedule_date,
+                        "schedule_time": product.schedule_time,
+                        "due_at_italy": due_at.isoformat(),
+                        "italy_now": now.isoformat(),
+                        "chromium_opens_at": open_at.isoformat(),
+                        "timezone": POSTING_TIMEZONE,
+                    },
+                    source="posting",
+                )
+                if open_at > now:
+                    if not await _sleep_until(cancel, open_at):
+                        break
                     if cancel.is_set() or not is_user_monitoring_enabled(user_id):
                         break
                     await _open_browser_for_user(user_id)
                     await _refresh_marketplace(user_id)
-                    if not await _sleep_until(cancel, due_at):
-                        break
+                    if due_at > _now_local():
+                        if not await _sleep_until(cancel, due_at):
+                            break
                 else:
+                    log_activity_isolated(
+                        LogCategory.MONITORING,
+                        f"Due now (within grace) — opening Chromium for {product.name[:50]}",
+                        details={"product_id": product.id},
+                        source="posting",
+                    )
                     await _open_browser_for_user(user_id)
+                    await _refresh_marketplace(user_id)
 
                 if cancel.is_set() or not is_user_monitoring_enabled(user_id):
                     break
@@ -582,7 +813,7 @@ async def _posting_wait_loop(user_id: int, cancel: asyncio.Event) -> None:
                     continue
 
                 try:
-                    async with _posting_lock:
+                    with _posting_thread_lock:
                         await publish_product(db, fresh, return_to_marketplace=False)
                     log_activity_isolated(
                         LogCategory.MONITORING,
@@ -614,16 +845,24 @@ async def _posting_wait_loop(user_id: int, cancel: asyncio.Event) -> None:
             source="posting",
         )
         raise
+    finally:
+        _set_posting_loop_active(user_id, False)
 
 
 async def start_posting_loop(user_id: int) -> None:
+    """Run until bot OFF — must await so the monitoring thread stays alive."""
     await stop_posting_loop(user_id)
     cancel = asyncio.Event()
     _posting_loop_cancel[user_id] = cancel
-    _posting_loop_tasks[user_id] = asyncio.create_task(
+    task = asyncio.create_task(
         _posting_wait_loop(user_id, cancel),
         name=f"posting-loop-{user_id}",
     )
+    _posting_loop_tasks[user_id] = task
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 async def stop_posting_loop(user_id: int) -> None:
@@ -642,17 +881,19 @@ async def stop_posting_loop(user_id: int) -> None:
 
 
 async def run_posting_cycle(user_id: int) -> dict:
-    """Fallback: pick due scheduled products (60s scheduler tick)."""
-    if _posting_loop_tasks.get(user_id) and not _posting_loop_tasks[user_id].done():
+    """Legacy 60s tick — disabled when wait loop handles posting (STOP_AFTER_MARKETPLACE)."""
+    cfg = get_settings()
+    if cfg.STOP_AFTER_MARKETPLACE or is_posting_loop_active(user_id):
         return {"status": "loop_active", "published": 0, "failed": 0, "skipped": 0}
 
-    if _posting_lock.locked():
+    if _posting_thread_lock.locked():
         return {"status": "busy", "published": 0, "failed": 0, "skipped": 0}
 
-    async with _posting_lock:
+    with _posting_thread_lock:
         db = SessionLocal()
         stats = {"status": "completed", "published": 0, "failed": 0, "skipped": 0}
         try:
+            mark_past_schedules_missed(db, user_id)
             due = get_due_products(db, user_id)
             if not due:
                 return stats

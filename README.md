@@ -18,20 +18,28 @@ FLUSSO
   - Obbligatori: name, description, price, images, category, condition, availability, schedule_date, schedule_time
   - schedule_date: YYYY-MM-DD o DD/MM/YYYY · schedule_time: HH:MM (fuso Europe/Rome)
   - Opzionali: details, brand, color
-- Settings: cookie Facebook opzionali; Test flusso completo = demo bicicletta fino a Pubblica (Pubblica NON cliccata)
+- Settings: cookie Facebook opzionali; Test flusso completo = demo bicicletta fino a schermata Pubblica (Pubblica NON cliccata, solo prova)
 - Start:
-  - Nessun prodotto e nessuna sessione Facebook → Chromium si apre subito per login
-  - Sessione salvata e prodotti in CSV → Chromium all ora programmata (Italia)
+  - Nessun prodotto programmato e nessuna sessione Facebook → Chromium si apre subito per login
+  - Sessione salvata e prodotti programmati → bot in attesa; Chromium ~3,5 s prima dell’ora (Italia)
   - Test flow attivo → demo bicicletta hardcoded, non da CSV
-- All ora programmata (prodotti CSV):
-  - Chromium apre → form completo → Pubblica cliccata → prodotto Published
+- All’ora programmata (prodotti CSV):
+  - Chromium apre ~3,5 s prima dell’orario
+  - Form completo → Pubblica cliccata → prodotto Published
   - Circa 12 secondi → Chromium si chiude → bot resta ON per il prossimo prodotto
 - Stop: bot OFF, Chromium chiuso
 
 STATI PRODOTTO
 
-- Scheduled
-- Published
-- Failed
-- Missing fields
-- Duplicates
+- Scheduled — in attesa dell’orario programmato
+- Published — pubblicato su Marketplace
+- Failed — errore o orario perso (dopo 5 min di tolleranza)
+- Missing fields — campi obbligatori mancanti nel CSV
+- Duplicates — stesso contenuto già presente
+
+NOTE
+
+- Tutti gli orari schedule_date + schedule_time sono Europe/Rome, non UTC né l'orologio del PC
+- Il bot sceglie sempre il prossimo slot futuro più vicino
+- Categoria e condizione: valori generici nel CSV (es. solo "used") → il bot sceglie l'opzione Marketplace più simile
+- Dopo Stop + Start, la pubblicazione programmata riprende normalmente

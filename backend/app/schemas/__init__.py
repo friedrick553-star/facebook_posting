@@ -1,7 +1,9 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_serializer
+
+from app.core.datetime_json import serialize_api_datetime
 
 
 class Token(BaseModel):
@@ -237,6 +239,10 @@ class ActivityLogResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
+    @field_serializer("created_at")
+    def _ser_created_at(self, v: datetime) -> str:
+        return serialize_api_datetime(v) or ""
+
 
 class LogsBulkDelete(BaseModel):
     ids: list[int]
@@ -302,6 +308,12 @@ class ProductResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    model_config = {"from_attributes": True}
+
+    @field_serializer("published_at", "created_at", "updated_at")
+    def _ser_product_datetimes(self, v: datetime | None) -> str | None:
+        return serialize_api_datetime(v)
+
 
 class ProductUpdate(BaseModel):
     name: str | None = None
@@ -324,6 +336,7 @@ class ProductStatsResponse(BaseModel):
     scheduled: int
     published: int
     failed: int
+    missed: int = 0  # deprecated — past slots count toward failed
     duplicate: int
     missing: int = 0
 

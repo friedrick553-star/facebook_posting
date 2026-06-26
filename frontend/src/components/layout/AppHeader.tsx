@@ -4,6 +4,7 @@ import { useTheme } from "@/contexts/ThemeContext"
 import { useLanguage } from "@/contexts/LanguageContext"
 import { useAuth } from "@/contexts/AuthContext"
 import MonitoringControls from "@/components/layout/MonitoringControls"
+import ItalyClock from "@/components/layout/ItalyClock"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
@@ -36,6 +37,8 @@ export default function AppHeader({ onMenuClick }: AppHeaderProps) {
         </button>
 
         <div className="flex-1" />
+
+        <ItalyClock />
 
         {isAdmin && <MonitoringControls compact />}
 

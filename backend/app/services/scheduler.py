@@ -34,7 +34,12 @@ def _read_monitoring_enabled() -> bool:
 
 
 async def check_product_posting_due():
-    """Every minute: publish scheduled products for each user with bot ON."""
+    """Every minute: legacy fallback only when wait loop is not used."""
+    from app.config import get_settings
+
+    if get_settings().STOP_AFTER_MARKETPLACE:
+        return
+
     from app.services.product_posting_service import run_posting_cycle
 
     for user_id in list_enabled_monitoring_user_ids():

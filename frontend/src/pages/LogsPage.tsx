@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge, Spinner, EmptyState } from "@/components/ui/badge"
-import { formatDate } from "@/lib/utils"
+import { formatAppDateTime } from "@/lib/datetime"
+import { useLanguage } from "@/contexts/LanguageContext"
 import { useToast } from "@/contexts/ToastContext"
 
 const levelColors: Record<string, "default" | "success" | "warning" | "destructive" | "secondary"> = {
@@ -27,6 +28,7 @@ export default function LogsPage() {
   const [deleting, setDeleting] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const { toast } = useToast()
+  const { language, t } = useLanguage()
 
   const load = async () => {
     setLoading(true)
@@ -204,7 +206,9 @@ export default function LogsPage() {
                       <div className="flex items-center gap-2 flex-wrap">
                         <Badge variant="secondary">{log.category}</Badge>
                         {log.source && <span className="text-xs text-muted-foreground">{log.source}</span>}
-                        <span className="text-xs text-muted-foreground ml-auto">{formatDate(log.created_at)}</span>
+                        <span className="text-xs text-muted-foreground ml-auto tabular-nums">
+                          {formatAppDateTime(log.created_at, language)} {t("logs.timeItaly")}
+                        </span>
                       </div>
                       <p className="text-sm mt-1">{log.message}</p>
                     </div>

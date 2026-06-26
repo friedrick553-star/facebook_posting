@@ -33,7 +33,7 @@ def _locale_args(cfg: Settings) -> list[str]:
 def _context_kwargs(cfg: Settings, *, headless: bool) -> dict:
     kwargs: dict = {
         "locale": cfg.BROWSER_LOCALE,
-        "timezone_id": cfg.BROWSER_TIMEZONE,
+        "timezone_id": cfg.posting_timezone,
         "extra_http_headers": {
             "Accept-Language": f"{cfg.BROWSER_LOCALE},it;q=0.9,en;q=0.8",
         },

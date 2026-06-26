@@ -6,16 +6,10 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 import type { Language } from "@/lib/i18n/translations"
+import { formatAppDateTime } from "@/lib/datetime"
 
 export function formatDate(date: string | Date, language: Language = "it") {
-  const locale = language === "it" ? "it-CH" : "en-GB"
-  return new Date(date).toLocaleString(locale, {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  })
+  return formatAppDateTime(date, language)
 }
 
 export function formatPrice(price: number | null | undefined, currency = "CHF") {

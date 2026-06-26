@@ -1,5 +1,6 @@
 import json
 import logging
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
@@ -23,6 +24,7 @@ def log_activity(
         message=message,
         details=json.dumps(details) if details else None,
         source=source,
+        created_at=datetime.now(timezone.utc),
     )
     try:
         db.add(entry)

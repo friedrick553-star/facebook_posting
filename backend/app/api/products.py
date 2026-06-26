@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
-from sqlalchemy import case
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.db_ready import require_db_ready
@@ -23,17 +23,6 @@ from app.services.product_csv import parse_products_csv
 
 router = APIRouter(prefix="/products", tags=["Products"])
 
-_SCHEDULE_DAY_ORDER = case(
-    (ProductPost.schedule_day == "mon", 0),
-    (ProductPost.schedule_day == "tue", 1),
-    (ProductPost.schedule_day == "wed", 2),
-    (ProductPost.schedule_day == "thu", 3),
-    (ProductPost.schedule_day == "fri", 4),
-    (ProductPost.schedule_day == "sat", 5),
-    (ProductPost.schedule_day == "sun", 6),
-    else_=99,
-)
-
 
 def _product_has_schedule(p: ProductPost) -> bool:
     if not p.schedule_time:
@@ -49,12 +38,12 @@ def _apply_product_sort(q, status: str | None, sort: str | None):
         effective = "published"
 
     if effective == "schedule":
-        return q.order_by(
-            ProductPost.schedule_date.asc().nulls_last(),
-            ProductPost.schedule_time.asc().nulls_last(),
-            _SCHEDULE_DAY_ORDER.asc(),
-            ProductPost.id.asc(),
+        schedule_key = func.concat(
+            func.coalesce(ProductPost.schedule_date, "9999-99-99"),
+            "T",
+            func.coalesce(ProductPost.schedule_time, "23:59"),
         )
+        return q.order_by(schedule_key.asc(), ProductPost.id.asc())
     if effective == "published":
         return q.order_by(
             ProductPost.published_at.desc().nulls_last(),
@@ -113,8 +102,10 @@ def _apply_schedule_status(p: ProductPost) -> None:
     if p.status in (ProductStatus.PUBLISHED, ProductStatus.PUBLISHING, ProductStatus.DUPLICATE, ProductStatus.MISSING):
         return
     if _product_has_schedule(p):
+        if p.status in (ProductStatus.MISSED, ProductStatus.FAILED):
+            p.error_message = None
         p.status = ProductStatus.SCHEDULED
-    elif p.status == ProductStatus.SCHEDULED:
+    elif p.status in (ProductStatus.SCHEDULED, ProductStatus.MISSED):
         p.status = ProductStatus.PENDING
 
 
@@ -166,12 +157,19 @@ def product_stats(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    from app.services.product_posting_service import mark_past_schedules_missed
+
+    mark_past_schedules_missed(db, current_user.id)
     catalog_q = _products_query(db, current_user).filter(ProductPost.status.in_(CATALOG_STATUSES))
     total = catalog_q.count()
     pending = catalog_q.filter(ProductPost.status == ProductStatus.PENDING).count()
-    scheduled = catalog_q.filter(ProductPost.status == ProductStatus.SCHEDULED).count()
+    scheduled = catalog_q.filter(
+        ProductPost.status.in_([ProductStatus.SCHEDULED, ProductStatus.PUBLISHING])
+    ).count()
     published = catalog_q.filter(ProductPost.status == ProductStatus.PUBLISHED).count()
-    failed = catalog_q.filter(ProductPost.status == ProductStatus.FAILED).count()
+    failed = catalog_q.filter(
+        ProductPost.status.in_([ProductStatus.FAILED, ProductStatus.MISSED])
+    ).count()
     duplicate = _products_query(db, current_user).filter(ProductPost.status == ProductStatus.DUPLICATE).count()
     missing = _products_query(db, current_user).filter(ProductPost.status == ProductStatus.MISSING).count()
     return ProductStatsResponse(
@@ -241,7 +239,21 @@ def list_products(
         q = q.filter(ProductPost.name.ilike(like) | ProductPost.description.ilike(like))
     if status:
         try:
-            q = q.filter(ProductPost.status == ProductStatus(status))
+            st = ProductStatus(status)
+            if status == "scheduled":
+                from app.services.product_posting_service import mark_past_schedules_missed
+
+                mark_past_schedules_missed(db, current_user.id)
+                q = q.filter(
+                    ProductPost.status.in_([ProductStatus.SCHEDULED, ProductStatus.PUBLISHING])
+                )
+            elif status == "failed":
+                from app.services.product_posting_service import mark_past_schedules_missed
+
+                mark_past_schedules_missed(db, current_user.id)
+                q = q.filter(ProductPost.status.in_([ProductStatus.FAILED, ProductStatus.MISSED]))
+            else:
+                q = q.filter(ProductPost.status == st)
         except ValueError:
             pass
     total = q.count()
@@ -280,8 +292,8 @@ async def upload_products_csv(
 
     batch_label = file.filename
     db_hashes = {
-        h
-        for (h,) in _products_query(db, current_user)
+        p.content_hash
+        for p in _products_query(db, current_user)
         .filter(ProductPost.status.in_(CATALOG_STATUSES))
         .all()
     }
@@ -381,6 +393,7 @@ def update_product(
         product.availability = data.availability.strip() or "single"
     if data.extra_details is not None:
         product.extra_details = json.dumps(data.extra_details)
+    schedule_changed = False
     if data.schedule_date is not None:
         from app.services.product_csv import parse_schedule_date
 
@@ -392,13 +405,23 @@ def update_product(
             product.schedule_day = None
         else:
             product.schedule_date = None
+        schedule_changed = True
     if data.schedule_day is not None:
         product.schedule_day = data.schedule_day or None
+        schedule_changed = True
     if data.schedule_time is not None:
         product.schedule_time = data.schedule_time or None
+        schedule_changed = True
 
     product.content_hash = product_content_hash(product.name, product.description, product.price)
     _apply_schedule_status(product)
+    if schedule_changed:
+        from app.services.product_posting_service import unmark_session_posted
+
+        unmark_session_posted(current_user.id, product.id)
+        # Interrupted publish leaves PUBLISHING — reschedule must re-enter the queue.
+        if _product_has_schedule(product) and product.status == ProductStatus.PUBLISHING:
+            product.status = ProductStatus.SCHEDULED
     db.commit()
     db.refresh(product)
     return _to_response(product)
@@ -450,19 +473,22 @@ def retry_failed_product(
     product = _get_user_product(db, current_user, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
-    if product.status != ProductStatus.FAILED:
-        raise HTTPException(status_code=400, detail="Only failed products can be retried")
+    if product.status not in (ProductStatus.FAILED, ProductStatus.MISSED):
+        raise HTTPException(status_code=400, detail="Only failed or missed products can be retried")
     if product.retry_count >= MAX_PRODUCT_RETRIES:
         raise HTTPException(status_code=400, detail=f"Maximum retries ({MAX_PRODUCT_RETRIES}) reached")
 
-    from app.services.product_posting_service import _now_local
+    from app.core.timezone import now_italy
 
-    now = _now_local()
+    now = now_italy()
     product.error_message = None
     product.schedule_date = now.strftime("%Y-%m-%d")
     product.schedule_day = None
     product.schedule_time = f"{now.hour:02d}:{now.minute:02d}"
     product.status = ProductStatus.SCHEDULED
+    from app.services.product_posting_service import unmark_session_posted
+
+    unmark_session_posted(current_user.id, product.id)
     db.commit()
     db.refresh(product)
     return _to_response(product)

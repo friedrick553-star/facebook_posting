@@ -9,6 +9,12 @@ from sqlalchemy.exc import OperationalError, TimeoutError as SATimeoutError
 
 from app.api import api_router
 from app.config import get_settings
+from app.core.timezone import (
+    POSTING_TIMEZONE,
+    italy_now_display,
+    italy_now_iso,
+    italy_utc_offset,
+)
 from app.database import check_database_connection, invalidate_pool
 from app.db_async import run_sync
 from app.services.scheduler import start_scheduler, stop_scheduler
@@ -123,9 +129,15 @@ async def health_check(request: Request):
     except asyncio.TimeoutError:
         db_ok = False
         invalidate_pool()
+    italy_now = italy_now_iso()
     return {
         "status": "healthy" if db_ok else "degraded",
         "database": "connected" if db_ok else "disconnected",
         "ready": db_ok,
         "version": settings.APP_VERSION,
+        "timezone": POSTING_TIMEZONE,
+        "utc_offset": italy_utc_offset(),
+        "italy_now": italy_now,
+        "italy_now_display": italy_now_display(),
+        "schedule_note": "All schedule_date + schedule_time values use Europe/Rome (Italy), not UTC or your PC clock.",
     }
