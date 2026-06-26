@@ -72,7 +72,7 @@ def _extra_details_dict(raw: str) -> dict[str, str]:
     return {}
 
 
-def _to_response(p: ProductPost) -> ProductResponse:
+def _to_response(p: ProductPost, *, is_queued: bool = False) -> ProductResponse:
     return ProductResponse(
         id=p.id,
         name=p.name,
@@ -88,6 +88,7 @@ def _to_response(p: ProductPost) -> ProductResponse:
         schedule_day=p.schedule_day,
         schedule_time=p.schedule_time,
         status=p.status.value,
+        is_queued=is_queued,
         facebook_url=p.facebook_url,
         error_message=p.error_message,
         retry_count=p.retry_count,
@@ -96,6 +97,13 @@ def _to_response(p: ProductPost) -> ProductResponse:
         created_at=p.created_at,
         updated_at=p.updated_at,
     )
+
+
+def _response_for_product(db: Session, user: User, product: ProductPost) -> ProductResponse:
+    from app.services.product_posting_service import queued_scheduled_product_ids
+
+    queued_ids = queued_scheduled_product_ids(db, user.id)
+    return _to_response(product, is_queued=product.id in queued_ids)
 
 
 def _apply_schedule_status(p: ProductPost) -> None:
@@ -263,8 +271,11 @@ def list_products(
         .limit(page_size)
         .all()
     )
+    from app.services.product_posting_service import queued_scheduled_product_ids
+
+    queued_ids = queued_scheduled_product_ids(db, current_user.id)
     return PaginatedProductsResponse(
-        items=[_to_response(p) for p in items],
+        items=[_to_response(p, is_queued=p.id in queued_ids) for p in items],
         total=total,
         page=page,
         page_size=page_size,
@@ -424,7 +435,7 @@ def update_product(
             product.status = ProductStatus.SCHEDULED
     db.commit()
     db.refresh(product)
-    return _to_response(product)
+    return _response_for_product(db, current_user, product)
 
 
 @router.delete("/{product_id}")
@@ -491,7 +502,7 @@ def retry_failed_product(
     unmark_session_posted(current_user.id, product.id)
     db.commit()
     db.refresh(product)
-    return _to_response(product)
+    return _response_for_product(db, current_user, product)
 
 
 @router.post("/{product_id}/publish", response_model=ProductResponse)
@@ -518,5 +529,5 @@ async def publish_product_now(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     db.refresh(product)
-    return _to_response(product)
+    return _response_for_product(db, current_user, product)
 

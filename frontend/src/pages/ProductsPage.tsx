@@ -412,9 +412,14 @@ function ProductsPageContent() {
                         )}
                       </td>
                       <td className="p-3">
-                        <Badge variant={STATUS_VARIANT[p.status] || "secondary"}>
-                          {t(`products.status.${p.status}`) || p.status}
-                        </Badge>
+                        <div className="flex flex-wrap items-center gap-1">
+                          {p.is_queued && (
+                            <Badge variant="warning">{t("products.tag.queued")}</Badge>
+                          )}
+                          <Badge variant={STATUS_VARIANT[p.status] || "secondary"}>
+                            {t(`products.status.${p.status}`) || p.status}
+                          </Badge>
+                        </div>
                       </td>
                       {isAdmin && (
                       <td className="p-3 whitespace-nowrap">

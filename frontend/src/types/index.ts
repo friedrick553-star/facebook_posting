@@ -155,6 +155,7 @@ export interface ProductPost {
   schedule_day: string | null
   schedule_time: string | null
   status: string
+  is_queued?: boolean
   facebook_url: string | null
   error_message: string | null
   retry_count: number

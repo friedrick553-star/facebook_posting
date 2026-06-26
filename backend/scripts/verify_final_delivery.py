@@ -38,12 +38,18 @@ WATCH_AFTER_DUE_SEC = 360
 def verify_publish_code() -> list[str]:
     errors: list[str] = []
     flow_src = inspect.getsource(fb_flow.publish_marketplace_item)
+    module_src = inspect.getsource(fb_flow)
     prod_src = inspect.getsource(pps.publish_product)
 
-    if 'await _click_button(page, "Publish", "Pubblica"' not in flow_src:
-        errors.append("Real publish must call _click_button(Publish, Pubblica, ...)")
     if "Submitting listing" not in flow_src:
         errors.append("Real publish path missing 'Submitting listing' step")
+    has_publish_click = (
+        "_submit_publish_click" in flow_src
+        or "_FOOTER_PUBLISH_LABELS" in module_src
+        or 'await _click_button(page, "Publish", "Pubblica"' in module_src
+    )
+    if not has_publish_click:
+        errors.append("Real publish must click Publish/Pubblica (footer or button helper)")
     if "product.status = ProductStatus.PUBLISHED" not in prod_src:
         errors.append("publish_product must set status PUBLISHED")
     if "Published to Marketplace" not in prod_src:

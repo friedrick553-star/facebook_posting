@@ -243,6 +243,29 @@ def count_queued_scheduled(db: Session, user_id: int, exclude_id: int) -> int:
     )
 
 
+def queued_scheduled_product_ids(db: Session, user_id: int) -> set[int]:
+    """SCHEDULED rows waiting while another product is PUBLISHING (UI queue tag)."""
+    publishing = (
+        db.query(ProductPost.id)
+        .filter(
+            ProductPost.user_id == user_id,
+            ProductPost.status == ProductStatus.PUBLISHING,
+        )
+        .first()
+    )
+    if not publishing:
+        return set()
+    rows = (
+        db.query(ProductPost.id)
+        .filter(
+            ProductPost.user_id == user_id,
+            ProductPost.status == ProductStatus.SCHEDULED,
+        )
+        .all()
+    )
+    return {row[0] for row in rows}
+
+
 def mark_past_schedules_missed(db: Session, user_id: int, now: datetime | None = None) -> int:
     """Move scheduled slots to FAILED only after publish grace expired (bot had time to run)."""
     now = now or _now_local()

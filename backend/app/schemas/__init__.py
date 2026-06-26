@@ -300,6 +300,7 @@ class ProductResponse(BaseModel):
     schedule_day: str | None
     schedule_time: str | None
     status: str
+    is_queued: bool = False
     facebook_url: str | None
     error_message: str | None
     retry_count: int
