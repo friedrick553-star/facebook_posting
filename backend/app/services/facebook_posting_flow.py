@@ -237,69 +237,30 @@ async def _click_button(page: Page, *labels: str) -> bool:
 
 
 async def _publish_button_visible(page: Page) -> bool:
-    """True only on the post-Next wizard step — not the first create/item form."""
+    """Audience step — Publish/Pubblica in fixed bottom footer (not sidebar scroll)."""
     url = page.url.lower()
     if "marketplace/create" not in url:
         return False
+    state = await _footer_button_state(page, _FOOTER_PUBLISH_LABELS)
+    return bool(state.get("found"))
 
-    labels = ("Publish", "Pubblica", "Publicar")
-    max_x = await _sidebar_max_x(page)
-    try:
-        win_h = float(await page.evaluate("window.innerHeight"))
-    except Exception:
-        win_h = 900.0
-    min_y = win_h * 0.72
 
-    for label in labels:
-        try:
-            role_btns = page.get_by_role("button", name=re.compile(f"^{re.escape(label)}$", re.I))
-            count = await role_btns.count()
-            for i in range(count):
-                btn = role_btns.nth(i)
-                if not await btn.is_visible(timeout=600):
-                    continue
-                text = (await btn.inner_text()).strip()
-                if text.lower() != label.lower():
-                    continue
-                box = await btn.bounding_box()
-                if box and box["x"] <= max_x and box["y"] >= min_y:
-                    return True
-        except Exception:
-            pass
-        try:
-            div_btns = page.locator(f'div[role="button"]')
-            count = await div_btns.count()
-            for i in range(count):
-                btn = div_btns.nth(i)
-                try:
-                    text = (await btn.inner_text()).strip()
-                except Exception:
-                    continue
-                if text.lower() != label.lower():
-                    continue
-                if not await btn.is_visible(timeout=400):
-                    continue
-                box = await btn.bounding_box()
-                if box and box["x"] <= max_x and box["y"] >= min_y:
-                    return True
-        except Exception:
-            continue
+async def _log_publish_button_found(page: Page, log) -> bool:
+    state = await _footer_button_state(page, _FOOTER_PUBLISH_LABELS)
+    if state.get("found"):
+        log("Publish button FOUND on audience screen (fixed footer)", state)
+        return True
     return False
 
 
 async def _wait_for_publish_screen(page: Page, log, *, timeout_s: float = 90.0) -> bool:
-    log("Waiting for next page — Publish must appear (will NOT click it)")
+    log("Waiting for audience page — Publish in fixed footer (will NOT click)")
     deadline = asyncio.get_event_loop().time() + timeout_s
     while asyncio.get_event_loop().time() < deadline:
-        if await _publish_button_visible(page):
-            await _human_pause(1.5, 2.5)
-            log("Publish button visible — dry run stops here")
+        if await _log_publish_button_found(page, log):
             return True
-        url = page.url.lower()
-        if "step=" in url and "marketplace/create" in url:
-            log("Wizard advanced to next step", {"url": page.url})
         await asyncio.sleep(1.2)
-    log("Publish screen did not appear in time", {"url": page.url})
+    log("Publish footer button did not appear in time", {"url": page.url})
     return False
 
 
@@ -450,6 +411,118 @@ async def _sidebar_max_x(page: Page) -> float:
     except Exception:
         return 1920 * 0.55
 
+
+_FOOTER_PUBLISH_LABELS = ("Publish", "Pubblica", "Publicar")
+_FOOTER_PREVIOUS_LABELS = ("Previous", "Precedente", "Indietro", "Back")
+
+
+async def _footer_button_state(page: Page, labels: tuple[str, ...]) -> dict:
+    """Publish/Previous in fixed bottom-left footer (audience page — role=button or role=none)."""
+    try:
+        return await page.evaluate(
+            """(labels) => {
+              const winW = window.innerWidth;
+              const winH = window.innerHeight;
+              const norm = (s) => (s || '').trim();
+              const textMatches = (el, label) => {
+                const t = norm(el.innerText || el.textContent);
+                if (t.toLowerCase() === label.toLowerCase()) return true;
+                for (const sp of el.querySelectorAll('span')) {
+                  const st = norm(sp.innerText || sp.textContent);
+                  if (st.toLowerCase() === label.toLowerCase()) return true;
+                }
+                return false;
+              };
+              const nodes = [...document.querySelectorAll(
+                '[role="button"], button, [role="none"]'
+              )];
+              let best = null;
+              let bestBottom = -1;
+              for (const label of labels) {
+                for (const el of nodes) {
+                  if (!textMatches(el, label)) continue;
+                  const r = el.getBoundingClientRect();
+                  if (r.width < 24 || r.height < 8) continue;
+                  if (r.left > winW * 0.58) continue;
+                  if (r.bottom < winH * 0.50) continue;
+                  const st = getComputedStyle(el);
+                  if (st.visibility === 'hidden' || st.display === 'none') continue;
+                  const clickEl = el.closest('[role="button"]') || el;
+                  const ariaDisabled = clickEl.getAttribute('aria-disabled') === 'true';
+                  const disabled = clickEl.hasAttribute('disabled') || ariaDisabled;
+                  if (r.bottom > bestBottom) {
+                    bestBottom = r.bottom;
+                    best = {
+                      found: true,
+                      label,
+                      text: norm(el.innerText || el.textContent).slice(0, 48),
+                      bottom: Math.round(r.bottom),
+                      left: Math.round(r.left),
+                      disabled,
+                      role: el.getAttribute('role') || '',
+                      audience: location.href.toLowerCase().includes('audience'),
+                    };
+                  }
+                }
+              }
+              return best || { found: false };
+            }""",
+            list(labels),
+        )
+    except Exception:
+        return {"found": False}
+
+
+async def _click_footer_button(page: Page, labels: tuple[str, ...], log, *, action_name: str) -> bool:
+    state = await _footer_button_state(page, labels)
+    if not state.get("found"):
+        return False
+    if state.get("disabled"):
+        log(f"{action_name} footer button found but disabled", state)
+        return False
+    try:
+        clicked = await page.evaluate(
+            """(labels) => {
+              const winW = window.innerWidth;
+              const winH = window.innerHeight;
+              const norm = (s) => (s || '').trim();
+              const textMatches = (el, label) => {
+                const t = norm(el.innerText || el.textContent);
+                if (t.toLowerCase() === label.toLowerCase()) return true;
+                for (const sp of el.querySelectorAll('span')) {
+                  if (norm(sp.innerText || sp.textContent).toLowerCase() === label.toLowerCase())
+                    return true;
+                }
+                return false;
+              };
+              const nodes = [...document.querySelectorAll(
+                '[role="button"], button, [role="none"]'
+              )];
+              let best = null;
+              let bestBottom = -1;
+              for (const label of labels) {
+                for (const el of nodes) {
+                  if (!textMatches(el, label)) continue;
+                  const r = el.getBoundingClientRect();
+                  if (r.left > winW * 0.58 || r.bottom < winH * 0.50) continue;
+                  if (r.bottom > bestBottom) { bestBottom = r.bottom; best = el; }
+                }
+              }
+              if (!best) return false;
+              const target = best.closest('[role="button"]') || best;
+              target.scrollIntoView({ block: 'end', behavior: 'instant' });
+              target.click();
+              return true;
+            }""",
+            list(labels),
+        )
+        if clicked:
+            log(f"Clicked {action_name} (fixed footer)", state)
+            await _human_pause(1.0, 2.0)
+            return True
+    except Exception:
+        pass
+    return False
 
 async def _find_sidebar_next_button(page: Page, log) -> Locator | None:
     """Next lives at the bottom of the main create/item sidebar — not an inner scroll area."""
@@ -1810,21 +1883,23 @@ async def _reach_publish_screen_after_form(page: Page, log, *, max_attempts: int
 
     clicked_any = False
     for attempt in range(max_attempts):
-        if await _publish_button_visible(page):
-            log("Publish screen visible")
+        if await _log_publish_button_found(page, log):
             return True
 
         state = await _sidebar_next_state(page)
         if attempt % 4 == 0:
-            log("Sidebar Next state (publish path)", state)
+            log("Sidebar Next state (before audience)", state)
 
         if state.get("found") and not state.get("ariaDisabled"):
             if await _safe_click_next(page, log):
                 clicked_any = True
-                if await _publish_button_visible(page):
+                await _human_pause(2.0, 3.5)
+                if await _wait_for_publish_screen(page, log, timeout_s=60.0):
                     return True
-                if await _wait_for_publish_screen(page, log, timeout_s=45.0):
-                    return True
+
+        if await _publish_button_visible(page):
+            await _log_publish_button_found(page, log)
+            return True
 
         await _scroll_listing_sidebar_to_bottom(page, log)
         await asyncio.sleep(1.5)
@@ -1840,14 +1915,10 @@ async def _reach_publish_screen_after_form(page: Page, log, *, max_attempts: int
 
 
 async def _submit_publish_click(page: Page, log) -> bool:
+    if await _click_footer_button(page, _FOOTER_PUBLISH_LABELS, log, action_name="Publish"):
+        return True
     await _scroll_listing_sidebar_to_bottom(page, log)
-    for _ in range(3):
-        if await _click_button(page, "Publish", "Pubblica", "Post", "Publicar"):
-            log("Clicked Publish / Pubblica")
-            return True
-        await _human_pause(1.0, 2.0)
-        await _scroll_listing_sidebar_to_bottom(page, log)
-    return False
+    return await _click_footer_button(page, _FOOTER_PUBLISH_LABELS, log, action_name="Publish")
 
 
 async def publish_marketplace_item(
@@ -1922,11 +1993,10 @@ async def publish_marketplace_item(
             await asyncio.sleep(DRY_RUN_REVIEW_PAUSE_SEC)
 
         on_publish = False
-        if await _publish_button_visible(page):
-            log("Publish screen already visible — dry run stops here")
+        if await _log_publish_button_found(page, log):
             on_publish = True
         else:
-            log("Clicking fixed sidebar Next after availability")
+            log("Clicking fixed footer Next — then wait for audience Publish")
             clicked = False
             for attempt in range(60):
                 state = await _sidebar_next_state(page)
@@ -1937,7 +2007,7 @@ async def publish_marketplace_item(
                     if clicked:
                         break
                 if await _publish_button_visible(page):
-                    on_publish = True
+                    on_publish = await _log_publish_button_found(page, log)
                     break
                 await _scroll_listing_sidebar_to_bottom(page, None)
                 await asyncio.sleep(1.5)

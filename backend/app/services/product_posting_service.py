@@ -622,6 +622,8 @@ async def publish_product(
         image_urls = _images_from_product(product)
         image_paths = await _download_images(image_urls)
 
+        verify_only = os.getenv("VERIFY_PUBLISH_SCREEN_ONLY", "").lower() in ("1", "true", "yes")
+
         product.status = ProductStatus.PUBLISHING
         db.commit()
 
@@ -642,11 +644,24 @@ async def publish_product(
                 cfg,
                 context=context,
                 log_fn=log,
-                skip_publish=False,
-                stop_after_first_next=False,
+                skip_publish=verify_only,
+                stop_after_first_next=verify_only,
                 fill_extra_details=True,
                 return_to_marketplace_after=return_to_marketplace,
             )
+            if verify_only:
+                product.status = ProductStatus.SCHEDULED
+                product.error_message = None
+                db.commit()
+                mark_session_posted(product.user_id, product.id)
+                log_activity(
+                    db,
+                    LogCategory.MONITORING,
+                    f"Publish button FOUND on audience screen — NOT clicked (verify test): {product.name[:60]}",
+                    details={"product_id": product.id, "url": listing_url, "verify_only": True},
+                    source="posting",
+                )
+                return
             product.status = ProductStatus.PUBLISHED
             product.facebook_url = listing_url
             product.published_at = datetime.now(timezone.utc)
