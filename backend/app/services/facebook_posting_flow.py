@@ -1079,7 +1079,7 @@ async def _pick_visible_fuzzy_option(
                 except Exception:
                     continue
 
-    if candidates and context in ("condition", "category"):
+    if candidates and context in ("condition", "category", "availability"):
         el, text = candidates[0]
         try:
             await _scroll_into_view(el)
@@ -1201,6 +1201,11 @@ async def _select_availability(page: Page, availability: str, log) -> bool:
                 continue
 
     log("Availability field not visible on current step")
+    picked = await _pick_visible_fuzzy_option(
+        page, log, context="availability", needles=list(want_patterns),
+    )
+    if picked:
+        return True
     return False
 
 
@@ -1793,6 +1798,58 @@ async def _advance_listing_steps(
             break
 
 
+async def _reach_publish_screen_after_form(page: Page, log, *, max_attempts: int = 80) -> bool:
+    """Click sidebar Next until Pubblica/Publish is visible — same robust loop as test flow."""
+    if await _publish_button_visible(page):
+        log("Publish screen already visible")
+        return True
+
+    await _scroll_listing_sidebar_to_bottom(page, log)
+    if DRY_RUN_REVIEW_PAUSE_SEC > 0:
+        await asyncio.sleep(min(DRY_RUN_REVIEW_PAUSE_SEC, 3.0))
+
+    clicked_any = False
+    for attempt in range(max_attempts):
+        if await _publish_button_visible(page):
+            log("Publish screen visible")
+            return True
+
+        state = await _sidebar_next_state(page)
+        if attempt % 4 == 0:
+            log("Sidebar Next state (publish path)", state)
+
+        if state.get("found") and not state.get("ariaDisabled"):
+            if await _safe_click_next(page, log):
+                clicked_any = True
+                if await _publish_button_visible(page):
+                    return True
+                if await _wait_for_publish_screen(page, log, timeout_s=45.0):
+                    return True
+
+        await _scroll_listing_sidebar_to_bottom(page, log)
+        await asyncio.sleep(1.5)
+
+    if await _publish_button_visible(page):
+        return True
+
+    log(
+        "Could not reach Publish screen after form",
+        {"url": page.url, "clicked_next": clicked_any, "state": await _sidebar_next_state(page)},
+    )
+    return False
+
+
+async def _submit_publish_click(page: Page, log) -> bool:
+    await _scroll_listing_sidebar_to_bottom(page, log)
+    for _ in range(3):
+        if await _click_button(page, "Publish", "Pubblica", "Post", "Publicar"):
+            log("Clicked Publish / Pubblica")
+            return True
+        await _human_pause(1.0, 2.0)
+        await _scroll_listing_sidebar_to_bottom(page, log)
+    return False
+
+
 async def publish_marketplace_item(
     page: Page,
     payload: ProductListingPayload,
@@ -1919,17 +1976,24 @@ async def publish_marketplace_item(
             await save_session(page.context, cfg)
         return page.url
 
-    log("Submitting listing — Next only when enabled, then Publish")
-    await _advance_listing_steps(
-        page, payload, log, max_steps=6, fill_extra_details=fill_extra_details,
-    )
+    log("Submitting listing — advance to Publish screen, then Pubblica")
+    if not await _reach_publish_screen_after_form(page, log):
+        log("Fallback — wizard steps to reach Publish")
+        await _advance_listing_steps(
+            page, payload, log, max_steps=10, fill_extra_details=fill_extra_details,
+        )
+
     await _human_pause(2.0, 3.5)
 
-    if await _click_button(page, "Publish", "Pubblica", "Post", "Publicar"):
-        await _human_pause(3.0, 5.0)
+    if not await _submit_publish_click(page, log):
+        log("Publish button not clicked — retry after scroll")
+        await _scroll_listing_sidebar_to_bottom(page, log)
+        await _submit_publish_click(page, log)
+
+    await _human_pause(3.0, 5.0)
 
     try:
-        await page.wait_for_url(re.compile(r"marketplace/item|marketplace/you/selling"), timeout=60_000)
+        await page.wait_for_url(re.compile(r"marketplace/item|marketplace/you/selling"), timeout=90_000)
     except PlaywrightTimeout:
         pass
 
@@ -1940,7 +2004,13 @@ async def publish_marketplace_item(
             err_text = await page.locator('[role="alert"]').first.inner_text(timeout=2000)
         except Exception:
             pass
-        raise RuntimeError(f"Publish did not complete. {err_text[:300]}")
+        state = await _sidebar_next_state(page)
+        publish_visible = await _publish_button_visible(page)
+        raise RuntimeError(
+            f"Publish did not complete (still on listing form). "
+            f"url={listing_url[:120]} publish_visible={publish_visible} "
+            f"next={state} alert={err_text[:200]}"
+        )
 
     await save_session(page.context, cfg)
     log("Listing published", {"url": listing_url})

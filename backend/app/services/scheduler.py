@@ -40,9 +40,11 @@ async def check_product_posting_due():
     if get_settings().STOP_AFTER_MARKETPLACE:
         return
 
-    from app.services.product_posting_service import run_posting_cycle
+    from app.services.product_posting_service import is_posting_loop_active, run_posting_cycle
 
     for user_id in list_enabled_monitoring_user_ids():
+        if is_posting_loop_active(user_id):
+            continue
         try:
             stats = await run_posting_cycle(user_id)
             if stats.get("published") or stats.get("failed"):

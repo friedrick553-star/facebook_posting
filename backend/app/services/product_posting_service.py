@@ -206,6 +206,43 @@ def _session_blocks_pick(user_id: int, product_id: int, moment: datetime | None,
     return True
 
 
+def reset_publishing_on_bot_start(db: Session, user_id: int) -> int:
+    """Clear rows stuck in PUBLISHING from a prior interrupted session when bot starts."""
+    rows = (
+        db.query(ProductPost)
+        .filter(
+            ProductPost.user_id == user_id,
+            ProductPost.status == ProductStatus.PUBLISHING,
+        )
+        .all()
+    )
+    if not rows:
+        return 0
+    for product in rows:
+        if product.schedule_date or product.schedule_day:
+            product.status = ProductStatus.SCHEDULED
+            product.error_message = None
+        else:
+            product.status = ProductStatus.FAILED
+            product.error_message = "Previous publish was interrupted — set schedule and retry."
+        unmark_session_posted(user_id, product.id)
+    db.commit()
+    return len(rows)
+
+
+def count_queued_scheduled(db: Session, user_id: int, exclude_id: int) -> int:
+    """Other scheduled products waiting — published one-by-one after the current one."""
+    return (
+        db.query(ProductPost)
+        .filter(
+            ProductPost.user_id == user_id,
+            ProductPost.status == ProductStatus.SCHEDULED,
+            ProductPost.id != exclude_id,
+        )
+        .count()
+    )
+
+
 def mark_past_schedules_missed(db: Session, user_id: int, now: datetime | None = None) -> int:
     """Move scheduled slots to FAILED only after publish grace expired (bot had time to run)."""
     now = now or _now_local()
@@ -812,6 +849,15 @@ async def _posting_wait_loop(user_id: int, cancel: asyncio.Event) -> None:
                 if not fresh or fresh.status != ProductStatus.SCHEDULED:
                     continue
 
+                queued = count_queued_scheduled(db, user_id, fresh.id)
+                if queued:
+                    log_activity_isolated(
+                        LogCategory.MONITORING,
+                        f"Queue: {queued} more scheduled product(s) — will publish after this one finishes",
+                        details={"user_id": user_id, "current_product_id": fresh.id, "queued": queued},
+                        source="posting",
+                    )
+
                 try:
                     with _posting_thread_lock:
                         await publish_product(db, fresh, return_to_marketplace=False)
@@ -824,6 +870,11 @@ async def _posting_wait_loop(user_id: int, cancel: asyncio.Event) -> None:
                     await _close_browser_for_user(user_id, wait_sec=POST_PUBLISH_STAY_SEC)
                 except Exception as exc:
                     logger.exception("Scheduled publish failed user %s: %s", user_id, exc)
+                    fresh = db.query(ProductPost).filter(ProductPost.id == product.id).first()
+                    if fresh and fresh.status == ProductStatus.PUBLISHING:
+                        fresh.status = ProductStatus.FAILED
+                        fresh.error_message = str(exc)[:2000]
+                        db.commit()
                     log_activity_isolated(
                         LogCategory.ERROR,
                         f"Scheduled posting error: {exc}",
@@ -851,6 +902,11 @@ async def _posting_wait_loop(user_id: int, cancel: asyncio.Event) -> None:
 
 async def start_posting_loop(user_id: int) -> None:
     """Run until bot OFF — must await so the monitoring thread stays alive."""
+    db = SessionLocal()
+    try:
+        reset_publishing_on_bot_start(db, user_id)
+    finally:
+        db.close()
     await stop_posting_loop(user_id)
     cancel = asyncio.Event()
     _posting_loop_cancel[user_id] = cancel
